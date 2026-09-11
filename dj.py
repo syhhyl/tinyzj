@@ -1,0 +1,6 @@
+"""
+dj
+"""
+
+class DongJiang:
+  pass
