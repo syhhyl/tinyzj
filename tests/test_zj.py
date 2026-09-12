@@ -38,6 +38,10 @@ class ZhujiangTest(unittest.TestCase):
 
     zhujiang.ring.step()
     self.assertEqual([response], zhujiang.socket.received_messages)
+    self.assertEqual(
+      {request.transaction_id: response},
+      zhujiang.socket.read_responses,
+    )
     self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_home_does_not_respond_to_other_message_types(self):
@@ -76,6 +80,23 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(response_ids, [
       response.transaction_id for response in zhujiang.socket.received_messages
     ])
+    self.assertEqual(
+      {
+        response.transaction_id: response
+        for response in zhujiang.home.sent_messages
+      },
+      zhujiang.socket.read_responses,
+    )
+
+  def test_socket_only_indexes_read_responses(self):
+    """Other messages remain available only through the general inbox."""
+    zhujiang = Zhujiang()
+    message = Message("io", "cc", message_type="write_response", transaction_id=3)
+
+    zhujiang.socket.receive(message)
+
+    self.assertEqual([message], zhujiang.socket.received_messages)
+    self.assertEqual({}, zhujiang.socket.read_responses)
 
 
 if __name__ == "__main__":
