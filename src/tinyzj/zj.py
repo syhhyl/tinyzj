@@ -50,6 +50,7 @@ class HomeWrapper(Endpoint):
         message.source_name,
         payload="read data",
         message_type="read_response",
+        transaction_id=message.transaction_id,
       )
       self.sent_messages.append(response)
       self.ring.inject(response)

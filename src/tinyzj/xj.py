@@ -8,7 +8,14 @@ class RingNode:
 
 class Message:
 
-  def __init__(self, source_name, target_name, payload=None, message_type="message"):
+  def __init__(
+    self,
+    source_name,
+    target_name,
+    payload=None,
+    message_type="message",
+    transaction_id=None,
+  ):
     if not source_name:
       raise ValueError("message source needs a name")
     if not target_name:
@@ -18,6 +25,7 @@ class Message:
     self.target_name = target_name
     self.payload = payload
     self.message_type = message_type
+    self.transaction_id = transaction_id
 
 class Injection:
 
@@ -41,6 +49,7 @@ class Ring:
       self.connections[node.name] = None
     
     self.in_flight = []
+    self.next_transaction_id = 0
     
     
   def connect(self, node_name, module):
@@ -65,6 +74,10 @@ class Ring:
   def inject(self, message):
     self._node_index(message.source_name)
     self._node_index(message.target_name)
+
+    if message.transaction_id is None:
+      message.transaction_id = self.next_transaction_id
+      self.next_transaction_id += 1
     
     injection = Injection(message)
     self.in_flight.append(injection)

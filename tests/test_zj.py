@@ -26,6 +26,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("cc", response.target_name)
     self.assertEqual("read_response", response.message_type)
     self.assertEqual("read data", response.payload)
+    self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual("home", zhujiang.ring.in_flight[0].current_node_name)
 
     zhujiang.ring.step()
@@ -50,6 +51,32 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual([], zhujiang.home.sent_messages)
     self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_home_preserves_ids_for_multiple_read_requests(self):
+    """Responses retain the IDs assigned to their requests."""
+    zhujiang = Zhujiang()
+    requests = [
+      Message("cc", "home", message_type="read_request"),
+      Message("cc", "home", message_type="read_request"),
+    ]
+    for request in requests:
+      zhujiang.ring.inject(request)
+
+    zhujiang.ring.step()
+    zhujiang.ring.step()
+
+    request_ids = [request.transaction_id for request in requests]
+    response_ids = [response.transaction_id for response in zhujiang.home.sent_messages]
+    self.assertEqual([0, 1], request_ids)
+    self.assertEqual(request_ids, response_ids)
+
+    zhujiang.ring.step()
+    zhujiang.ring.step()
+    zhujiang.ring.step()
+
+    self.assertEqual(response_ids, [
+      response.transaction_id for response in zhujiang.socket.received_messages
+    ])
 
 
 if __name__ == "__main__":

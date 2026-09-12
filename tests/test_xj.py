@@ -54,6 +54,7 @@ class InjectionTest(unittest.TestCase):
 
     self.assertIs(injection.message, message)
     self.assertEqual("cc", injection.current_node_name)
+    self.assertEqual(0, message.transaction_id)
     self.assertEqual([injection], ring.in_flight)
 
   def test_rejects_unknown_endpoint(self):
