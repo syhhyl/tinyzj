@@ -82,6 +82,31 @@ class Ring:
       index = (index + 1) % len(self.nodes)
 
   def step(self):
+    arrived = [
+      injection
+      for injection in self.in_flight
+      if injection.current_node_name == injection.message.target_name
+    ]
+    receivers = []
+    for injection in arrived:
+      receiver = self.connections[injection.current_node_name]
+      if receiver is None:
+        raise ValueError(
+          f"ring node is not connected: {injection.current_node_name}"
+        )
+      if not callable(getattr(receiver, "receive", None)):
+        raise TypeError(
+          f"ring node cannot receive messages: {injection.current_node_name}"
+        )
+      receivers.append(receiver)
+
+    for injection, receiver in zip(arrived, receivers):
+      receiver.receive(injection.message)
+
+    self.in_flight = [
+      injection for injection in self.in_flight if injection not in arrived
+    ]
+
     for injection in self.in_flight:
       if injection.current_node_name != injection.message.target_name:
         current_index = self._node_index(injection.current_node_name)

@@ -11,6 +11,24 @@ def make_ring():
   ])
 
 
+class RecordingEndpoint:
+
+  def __init__(self):
+    self.received_messages = []
+
+  def receive(self, message):
+    self.received_messages.append(message)
+
+
+def connect_recording_endpoints(ring):
+  endpoints = {}
+  for node in ring.nodes:
+    endpoint = RecordingEndpoint()
+    ring.connect(node.name, endpoint)
+    endpoints[node.name] = endpoint
+  return endpoints
+
+
 class TopologyTest(unittest.TestCase):
   def test_path_wraps_around(self):
     """Path wraps around."""
@@ -61,8 +79,8 @@ class TransportTest(unittest.TestCase):
     ring.step()
     self.assertEqual("io", injection.current_node_name)
 
-  def test_step_wraps_around_and_stops_at_target(self):
-    """Transport wraps around once and does not pass its target."""
+  def test_step_wraps_around_to_target(self):
+    """Transport wraps around once to reach its target."""
     ring = make_ring()
     injection = ring.inject(Message("io", "home", "write request"))
 
@@ -72,8 +90,53 @@ class TransportTest(unittest.TestCase):
     ring.step()
     self.assertEqual("home", injection.current_node_name)
 
+
+class DeliveryTest(unittest.TestCase):
+  def test_step_delivers_an_arrived_message_on_the_next_step(self):
+    """Arrival and delivery occur on separate steps."""
+    ring = make_ring()
+    endpoints = connect_recording_endpoints(ring)
+    message = Message("cc", "io", "read request")
+    injection = ring.inject(message)
+
     ring.step()
-    self.assertEqual("home", injection.current_node_name)
+    ring.step()
+
+    self.assertEqual("io", injection.current_node_name)
+    self.assertEqual([], endpoints["io"].received_messages)
+    self.assertEqual([injection], ring.in_flight)
+
+    ring.step()
+
+    self.assertEqual([message], endpoints["io"].received_messages)
+    self.assertEqual([], ring.in_flight)
+
+  def test_step_delivers_all_messages_that_are_already_at_a_target(self):
+    """All messages already at a target are delivered in one step."""
+    ring = make_ring()
+    endpoints = connect_recording_endpoints(ring)
+    messages = [
+      Message("home", "home", "first local request"),
+      Message("home", "home", "second local request"),
+    ]
+    for message in messages:
+      ring.inject(message)
+
+    ring.step()
+
+    self.assertEqual(messages, endpoints["home"].received_messages)
+    self.assertEqual([], ring.in_flight)
+
+  def test_step_rejects_delivery_to_an_unconnected_target(self):
+    """An arrived message remains in flight when its target is disconnected."""
+    ring = make_ring()
+    injection = ring.inject(Message("cc", "home", "read request"))
+
+    ring.step()
+    with self.assertRaisesRegex(ValueError, "ring node is not connected: home"):
+      ring.step()
+
+    self.assertEqual([injection], ring.in_flight)
 
   def test_step_leaves_an_empty_ring_unchanged(self):
     """Stepping an empty ring creates no in-flight messages."""
@@ -83,14 +146,17 @@ class TransportTest(unittest.TestCase):
 
     self.assertEqual([], ring.in_flight)
 
-  def test_step_keeps_a_local_message_at_its_target(self):
-    """A message addressed to its source does not circulate."""
+  def test_step_delivers_a_local_message(self):
+    """A message addressed to its source is delivered immediately."""
     ring = make_ring()
-    injection = ring.inject(Message("cc", "cc", "local request"))
+    endpoints = connect_recording_endpoints(ring)
+    message = Message("cc", "cc", "local request")
+    ring.inject(message)
 
     ring.step()
 
-    self.assertEqual("cc", injection.current_node_name)
+    self.assertEqual([message], endpoints["cc"].received_messages)
+    self.assertEqual([], ring.in_flight)
 
 
 if __name__ == "__main__":

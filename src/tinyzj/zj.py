@@ -21,16 +21,25 @@ class Zhujiang:
     self.ring.connect("io", self.io_wrapper)
 
 
+class Endpoint:
 
-class Socket:
+  def __init__(self):
+    self.received_messages = []
+
+  def receive(self, message):
+    self.received_messages.append(message)
+
+
+class Socket(Endpoint):
   pass
 
 
-class HomeWrapper:
+class HomeWrapper(Endpoint):
   
   def __init__(self):
+    super().__init__()
     self.dj = DongJiang()
     
 
-class IoWrapper:
+class IoWrapper(Endpoint):
   pass
