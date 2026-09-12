@@ -84,6 +84,13 @@ class Ring:
       if index == target_index:
         return path
       index = (index + 1) % len(self.nodes)
+
+  def step(self):
+    for injection in self.in_flight:
+      if injection.current_node_name != injection.message.target_name:
+        current_index = self._node_index(injection.current_node_name)
+        next_index = (current_index + 1) % len(self.nodes)
+        injection.current_node_name = self.nodes[next_index].name
     
   
   def _node_index(self, node_name):
