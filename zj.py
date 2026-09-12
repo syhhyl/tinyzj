@@ -1,10 +1,16 @@
 from dj import DongJiang
-from xj import Ring
+from xj import Ring, RingNode
 
 class Zhujiang:
   
   def __init__(self):
-    self.ring = Ring()
+    nodes = []
+    
+    nodes.append(RingNode("cc", "CPU cluster"))
+    nodes.append(RingNode("home", "coherent home"))
+    nodes.append(RingNode("io", "memory and IO"))
+    
+    self.ring = Ring(nodes)
     
     self.socket = Socket()
     self.home = HomeWrapper()
@@ -34,7 +40,10 @@ class IoWrapper:
 
 if __name__ == "__main__":
   system = Zhujiang()
-  print("Zhujiang / Ring connections: ")
-  for port, module in system.ring.connections.items():
-    print(f" {port} <-> {type(module).__name__}")
-  print(f"HomeWrapper: {type(system.home.dj).__name__}")
+  
+  for node in system.ring.nodes:
+    module = system.ring.connections[node.name]
+    prev, next = system.ring.neighbors_of(node.name)
+    print(f"{node.name}: {node.role}, previous={prev.name}, next={next.name}, {type(module).__name__}")
+    
+  print(f"HomeWrapper 内部：{type(system.home.dj).__name__}")
