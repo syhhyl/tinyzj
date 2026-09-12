@@ -8,13 +8,14 @@ class ZhujiangTest(unittest.TestCase):
   def test_home_returns_a_read_response_to_the_requester(self):
     """A read request makes a round trip between Socket and Home."""
     zhujiang = Zhujiang()
-    request = Message(
-      "cc",
-      "home",
-      payload="address 0x1000",
-      message_type="read_request",
-    )
-    zhujiang.ring.inject(request)
+    request = zhujiang.socket.read("address 0x1000")
+
+    self.assertEqual([request], zhujiang.socket.sent_messages)
+    self.assertEqual("cc", request.source_name)
+    self.assertEqual("home", request.target_name)
+    self.assertEqual("read_request", request.message_type)
+    self.assertEqual("address 0x1000", request.payload)
+    self.assertEqual(0, request.transaction_id)
 
     zhujiang.ring.step()
     zhujiang.ring.step()
@@ -56,11 +57,9 @@ class ZhujiangTest(unittest.TestCase):
     """Responses retain the IDs assigned to their requests."""
     zhujiang = Zhujiang()
     requests = [
-      Message("cc", "home", message_type="read_request"),
-      Message("cc", "home", message_type="read_request"),
+      zhujiang.socket.read("address 0x1000"),
+      zhujiang.socket.read("address 0x2000"),
     ]
-    for request in requests:
-      zhujiang.ring.inject(request)
 
     zhujiang.ring.step()
     zhujiang.ring.step()

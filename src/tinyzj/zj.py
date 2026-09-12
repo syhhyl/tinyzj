@@ -12,7 +12,7 @@ class Zhujiang:
     
     self.ring = Ring(nodes)
     
-    self.socket = Socket()
+    self.socket = Socket(self.ring)
     self.home = HomeWrapper(self.ring)
     self.io_wrapper = IoWrapper()
 
@@ -31,7 +31,22 @@ class Endpoint:
 
 
 class Socket(Endpoint):
-  pass
+
+  def __init__(self, ring):
+    super().__init__()
+    self.ring = ring
+    self.sent_messages = []
+
+  def read(self, payload=None):
+    request = Message(
+      "cc",
+      "home",
+      payload=payload,
+      message_type="read_request",
+    )
+    self.sent_messages.append(request)
+    self.ring.inject(request)
+    return request
 
 
 class HomeWrapper(Endpoint):
