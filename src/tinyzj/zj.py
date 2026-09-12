@@ -1,5 +1,5 @@
 from .dj import DongJiang
-from .xj import Ring, RingNode
+from .xj import Message, Ring, RingNode
 
 class Zhujiang:
   
@@ -13,7 +13,7 @@ class Zhujiang:
     self.ring = Ring(nodes)
     
     self.socket = Socket()
-    self.home = HomeWrapper()
+    self.home = HomeWrapper(self.ring)
     self.io_wrapper = IoWrapper()
 
     self.ring.connect("cc", self.socket)
@@ -36,9 +36,23 @@ class Socket(Endpoint):
 
 class HomeWrapper(Endpoint):
   
-  def __init__(self):
+  def __init__(self, ring):
     super().__init__()
+    self.ring = ring
+    self.sent_messages = []
     self.dj = DongJiang()
+
+  def receive(self, message):
+    super().receive(message)
+    if message.message_type == "read_request":
+      response = Message(
+        "home",
+        message.source_name,
+        payload="read data",
+        message_type="read_response",
+      )
+      self.sent_messages.append(response)
+      self.ring.inject(response)
     
 
 class IoWrapper(Endpoint):

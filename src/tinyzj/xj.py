@@ -8,7 +8,7 @@ class RingNode:
 
 class Message:
 
-  def __init__(self, source_name, target_name, payload=None):
+  def __init__(self, source_name, target_name, payload=None, message_type="message"):
     if not source_name:
       raise ValueError("message source needs a name")
     if not target_name:
@@ -16,7 +16,8 @@ class Message:
 
     self.source_name = source_name
     self.target_name = target_name
-    self.payload = payload 
+    self.payload = payload
+    self.message_type = message_type
 
 class Injection:
 
@@ -82,11 +83,13 @@ class Ring:
       index = (index + 1) % len(self.nodes)
 
   def step(self):
+    in_flight = list(self.in_flight)
     arrived = [
       injection
-      for injection in self.in_flight
+      for injection in in_flight
       if injection.current_node_name == injection.message.target_name
     ]
+    moving = [injection for injection in in_flight if injection not in arrived]
     receivers = []
     for injection in arrived:
       receiver = self.connections[injection.current_node_name]
@@ -103,11 +106,12 @@ class Ring:
     for injection, receiver in zip(arrived, receivers):
       receiver.receive(injection.message)
 
-    self.in_flight = [
-      injection for injection in self.in_flight if injection not in arrived
+    new_injections = [
+      injection for injection in self.in_flight if injection not in in_flight
     ]
+    self.in_flight = moving + new_injections
 
-    for injection in self.in_flight:
+    for injection in moving:
       if injection.current_node_name != injection.message.target_name:
         current_index = self._node_index(injection.current_node_name)
         next_index = (current_index + 1) % len(self.nodes)
