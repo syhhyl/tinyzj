@@ -22,6 +22,11 @@ class Message:
     self.target_name = target_name
     self.payload = payload 
 
+class Injection:
+
+  def __init__(self, message):
+    self.message = message
+    self.current_node_name = message.source_name
 
 
 
@@ -37,6 +42,8 @@ class Ring:
       if node.name in self.connections:
         raise ValueError(f"duplicate ring node: {node.name}")
       self.connections[node.name] = None
+    
+    self.in_flight = []
     
     
   def connect(self, node_name, module):
@@ -58,6 +65,13 @@ class Ring:
 
     raise ValueError(f"unknown ring node: {node_name}")
     
+  def inject(self, message):
+    self._node_index(message.source_name)
+    self._node_index(message.target_name)
+    
+    injection = Injection(message)
+    self.in_flight.append(injection)
+    return injection
 
   def path_from(self, source_name, target_name):
     index = self._node_index(source_name)
