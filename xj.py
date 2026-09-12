@@ -10,6 +10,20 @@ class RingNode:
     self.name = name
     self.role = role
 
+class Message:
+
+  def __init__(self, source_name, target_name, payload=None):
+    if not source_name:
+      raise ValueError("message source needs a name")
+    if not target_name:
+      raise ValueError("message target needs a name")
+
+    self.source_name = source_name
+    self.target_name = target_name
+    self.payload = payload 
+
+
+
 
 class Ring:
 
