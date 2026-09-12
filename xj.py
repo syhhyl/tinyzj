@@ -43,3 +43,24 @@ class Ring:
         )
 
     raise ValueError(f"unknown ring node: {node_name}")
+    
+
+  def path_from(self, source_name, target_name):
+    index = self._node_index(source_name)
+    target_index = self._node_index(target_name)
+    
+    path = []
+    
+    while True:
+      path.append(self.nodes[index])
+      if index == target_index:
+        return path
+      index = (index + 1) % len(self.nodes)
+    
+  
+  def _node_index(self, node_name):
+    for index, node in enumerate(self.nodes):
+      if node.name == node_name:
+        return index
+    
+    raise ValueError(f"unknown ring node: {node_name}")
