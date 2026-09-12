@@ -2,4 +2,4 @@
 
 set -eu
 
-exec python3 -m unittest discover -s tests -v
+PYTHONPATH=src${PYTHONPATH:+:$PYTHONPATH} exec python3 -m unittest discover -s tests -v

@@ -1,0 +1,1 @@
+"""Minimal Zhujiang NoC model."""

@@ -1,5 +1,5 @@
-from dj import DongJiang
-from xj import Ring, RingNode
+from .dj import DongJiang
+from .xj import Ring, RingNode
 
 class Zhujiang:
   

@@ -1,6 +1,6 @@
 import unittest
 
-from xj import Message, Ring, RingNode
+from tinyzj.xj import Message, Ring, RingNode
 
 
 def make_ring():
