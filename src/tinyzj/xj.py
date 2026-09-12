@@ -1,7 +1,3 @@
-"""
-xijiang
-"""
-
 class RingNode:
   
   def __init__(self, name, role):
