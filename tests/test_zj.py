@@ -18,8 +18,8 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(0, request.transaction_id)
     self.assertIsNone(zhujiang.socket.read_response_for(request))
 
-    zhujiang.ring.step()
-    zhujiang.ring.step()
+    zhujiang.step()
+    zhujiang.step()
 
     self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual(1, len(zhujiang.home.sent_messages))
@@ -31,13 +31,13 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual("home", zhujiang.ring.in_flight[0].current_node_name)
 
-    zhujiang.ring.step()
+    zhujiang.step()
     self.assertEqual("io", zhujiang.ring.in_flight[0].current_node_name)
 
-    zhujiang.ring.step()
+    zhujiang.step()
     self.assertEqual("cc", zhujiang.ring.in_flight[0].current_node_name)
 
-    zhujiang.ring.step()
+    zhujiang.step()
     self.assertEqual([response], zhujiang.socket.received_messages)
     self.assertIs(response, zhujiang.socket.read_response_for(request))
     self.assertEqual([], zhujiang.ring.in_flight)
@@ -48,8 +48,8 @@ class ZhujiangTest(unittest.TestCase):
     request = Message("cc", "home", message_type="write_request")
     zhujiang.ring.inject(request)
 
-    zhujiang.ring.step()
-    zhujiang.ring.step()
+    zhujiang.step()
+    zhujiang.step()
 
     self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual([], zhujiang.home.sent_messages)
@@ -63,17 +63,17 @@ class ZhujiangTest(unittest.TestCase):
       zhujiang.socket.read("address 0x2000"),
     ]
 
-    zhujiang.ring.step()
-    zhujiang.ring.step()
+    zhujiang.step()
+    zhujiang.step()
 
     request_ids = [request.transaction_id for request in requests]
     response_ids = [response.transaction_id for response in zhujiang.home.sent_messages]
     self.assertEqual([0, 1], request_ids)
     self.assertEqual(request_ids, response_ids)
 
-    zhujiang.ring.step()
-    zhujiang.ring.step()
-    zhujiang.ring.step()
+    zhujiang.step()
+    zhujiang.step()
+    zhujiang.step()
 
     self.assertEqual(response_ids, [
       response.transaction_id for response in zhujiang.socket.received_messages

@@ -20,6 +20,9 @@ class Zhujiang:
     self.ring.connect("home", self.home)
     self.ring.connect("io", self.io_wrapper)
 
+  def step(self):
+    self.ring.step()
+
 
 class Endpoint:
 
