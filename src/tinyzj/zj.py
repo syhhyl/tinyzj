@@ -109,6 +109,7 @@ class HomeWrapper(Endpoint):
     self.ring = ring
     self.sent_messages = []
     self.dj = DongJiang()
+    self.data_by_address = {}
 
   def receive(self, message):
     super().receive(message)
@@ -116,7 +117,7 @@ class HomeWrapper(Endpoint):
       response = Message(
         "home",
         message.source_name,
-        payload="read data",
+        payload=self.data_by_address.get(message.address, "read data"),
         address=message.address,
         message_type="read_response",
         transaction_id=message.transaction_id,
@@ -124,6 +125,7 @@ class HomeWrapper(Endpoint):
       self.sent_messages.append(response)
       self.ring.inject(response)
     elif message.message_type == "write_request":
+      self.data_by_address[message.address] = message.payload
       response = Message(
         "home",
         message.source_name,

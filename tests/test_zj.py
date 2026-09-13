@@ -156,6 +156,35 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([response], zhujiang.socket.received_messages)
     self.assertIs(response, zhujiang.socket.write_response_for(request))
 
+  def test_home_reads_data_written_to_the_same_address(self):
+    """A completed write changes a later read at the same address."""
+    zhujiang = Zhujiang()
+    write_request = zhujiang.socket.write("0x1000", "value 1")
+
+    zhujiang.run_until_idle()
+    read_request = zhujiang.socket.read("0x1000")
+    zhujiang.run_until_idle()
+
+    self.assertEqual("value 1", zhujiang.home.data_by_address["0x1000"])
+    self.assertIsNotNone(zhujiang.socket.write_response_for(write_request))
+    read_response = zhujiang.socket.read_response_for(read_request)
+    self.assertEqual("0x1000", read_response.address)
+    self.assertEqual("value 1", read_response.payload)
+
+  def test_home_keeps_data_for_different_addresses_separate(self):
+    """Writes at different addresses do not overwrite each other."""
+    zhujiang = Zhujiang()
+    zhujiang.socket.write("0x1000", "value 1")
+    zhujiang.socket.write("0x2000", "value 2")
+
+    zhujiang.run_until_idle()
+    first_read = zhujiang.socket.read("0x1000")
+    second_read = zhujiang.socket.read("0x2000")
+    zhujiang.run_until_idle()
+
+    self.assertEqual("value 1", zhujiang.socket.read_response_for(first_read).payload)
+    self.assertEqual("value 2", zhujiang.socket.read_response_for(second_read).payload)
+
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
