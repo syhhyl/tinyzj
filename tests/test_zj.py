@@ -185,7 +185,7 @@ class ZhujiangTest(unittest.TestCase):
     read_request = zhujiang.socket.read("0x1000")
     zhujiang.run_until_idle()
 
-    self.assertEqual("value 1", zhujiang.home.data_by_address["0x1000"])
+    self.assertEqual("value 1", zhujiang.home.dj.data_by_address["0x1000"])
     self.assertIsNotNone(zhujiang.socket.write_response_for(write_request))
     read_response = zhujiang.socket.read_response_for(read_request)
     self.assertEqual("0x1000", read_response.address)
@@ -217,7 +217,7 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertIsNotNone(zhujiang.socket.write_response_for(first_write))
     self.assertIsNotNone(zhujiang.socket.write_response_for(second_write))
-    self.assertEqual("value 2", zhujiang.home.data_by_address["0x1000"])
+    self.assertEqual("value 2", zhujiang.home.dj.data_by_address["0x1000"])
     self.assertEqual(
       "value 2",
       zhujiang.socket.read_response_for(read_request).payload,
@@ -262,7 +262,7 @@ class ZhujiangTest(unittest.TestCase):
 
         self.assertEqual([request], zhujiang.home.received_messages)
         self.assertEqual([], zhujiang.home.sent_messages)
-        self.assertEqual({}, zhujiang.home.data_by_address)
+        self.assertEqual({}, zhujiang.home.dj.data_by_address)
         self.assertEqual([injection], zhujiang.ring.in_flight)
 
   def test_home_preserves_ids_for_multiple_read_requests(self):
