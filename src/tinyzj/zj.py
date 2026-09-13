@@ -55,22 +55,17 @@ class Socket(Endpoint):
     self._io_responses = {}
 
   def read(self, payload=None):
-    request = Message(
-      "cc",
-      "home",
-      payload=payload,
-      message_type="read_request",
-    )
-    self.sent_messages.append(request)
-    self.ring.inject(request)
-    return request
+    return self._send_request("home", "read_request", payload)
 
   def io_request(self, payload=None):
+    return self._send_request("io", "io_request", payload)
+
+  def _send_request(self, target_name, message_type, payload):
     request = Message(
       "cc",
-      "io",
+      target_name,
       payload=payload,
-      message_type="io_request",
+      message_type=message_type,
     )
     self.sent_messages.append(request)
     self.ring.inject(request)
