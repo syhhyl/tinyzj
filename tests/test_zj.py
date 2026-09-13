@@ -74,6 +74,17 @@ class ZhujiangTest(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "max_steps must be non-negative"):
       zhujiang.run_until_idle(max_steps=-1)
 
+  def test_io_wrapper_receives_a_message_from_the_ring(self):
+    """The top-level io node is connected to IoWrapper."""
+    zhujiang = Zhujiang()
+    message = Message("cc", "io", message_type="io_request")
+    zhujiang.ring.inject(message)
+
+    steps = zhujiang.run_until_idle()
+
+    self.assertEqual(3, steps)
+    self.assertEqual([message], zhujiang.io_wrapper.received_messages)
+
   def test_home_does_not_respond_to_other_message_types(self):
     """Only the teaching read request has a response in this iteration."""
     zhujiang = Zhujiang()
