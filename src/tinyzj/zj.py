@@ -60,6 +60,9 @@ class Socket(Endpoint):
   def io_request(self, payload=None):
     return self._send_request("io", "io_request", payload)
 
+  def write(self, payload=None):
+    return self._send_request("home", "write_request", payload)
+
   def _send_request(self, target_name, message_type, payload):
     request = Message(
       "cc",

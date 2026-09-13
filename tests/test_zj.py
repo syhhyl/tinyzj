@@ -129,11 +129,16 @@ class ZhujiangTest(unittest.TestCase):
   def test_home_does_not_respond_to_other_message_types(self):
     """Only the teaching read request has a response in this iteration."""
     zhujiang = Zhujiang()
-    request = Message("cc", "home", message_type="write_request")
-    zhujiang.ring.inject(request)
+    request = zhujiang.socket.write("value 1")
 
-    zhujiang.step()
-    zhujiang.step()
+    self.assertEqual([request], zhujiang.socket.sent_messages)
+    self.assertEqual("cc", request.source_name)
+    self.assertEqual("home", request.target_name)
+    self.assertEqual("write_request", request.message_type)
+    self.assertEqual("value 1", request.payload)
+    self.assertEqual(0, request.transaction_id)
+
+    zhujiang.run_until_idle()
 
     self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual([], zhujiang.home.sent_messages)
