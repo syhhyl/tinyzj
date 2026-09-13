@@ -76,6 +76,26 @@ class ZhujiangTest(unittest.TestCase):
     with self.assertRaisesRegex(ValueError, "max_steps must be non-negative"):
       zhujiang.run_until_idle(max_steps=-1)
 
+  def test_socket_rejects_a_read_without_an_address(self):
+    """A read must identify the Home data to fetch."""
+    zhujiang = Zhujiang()
+
+    with self.assertRaisesRegex(ValueError, "read request needs an address"):
+      zhujiang.socket.read(None)
+
+    self.assertEqual([], zhujiang.socket.sent_messages)
+    self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_socket_rejects_a_write_without_an_address(self):
+    """A write must identify the Home data to change."""
+    zhujiang = Zhujiang()
+
+    with self.assertRaisesRegex(ValueError, "write request needs an address"):
+      zhujiang.socket.write(None, "value 1")
+
+    self.assertEqual([], zhujiang.socket.sent_messages)
+    self.assertEqual([], zhujiang.ring.in_flight)
+
   def test_io_wrapper_returns_a_response_to_the_requester(self):
     """An io request makes a round trip between Socket and IoWrapper."""
     zhujiang = Zhujiang()

@@ -54,12 +54,16 @@ class Socket(Endpoint):
     self._responses = {}
 
   def read(self, address):
+    if address is None:
+      raise ValueError("read request needs an address")
     return self._send_request("home", "read_request", address=address)
 
   def io_request(self, payload=None):
     return self._send_request("io", "io_request", payload)
 
   def write(self, address, data):
+    if address is None:
+      raise ValueError("write request needs an address")
     return self._send_request(
       "home",
       "write_request",
