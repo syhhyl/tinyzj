@@ -13,6 +13,7 @@ class Message:
     source_name,
     target_name,
     payload=None,
+    address=None,
     message_type="message",
     transaction_id=None,
   ):
@@ -24,6 +25,7 @@ class Message:
     self.source_name = source_name
     self.target_name = target_name
     self.payload = payload
+    self.address = address
     self.message_type = message_type
     self.transaction_id = transaction_id
 

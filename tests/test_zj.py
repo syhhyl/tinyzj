@@ -8,13 +8,14 @@ class ZhujiangTest(unittest.TestCase):
   def test_home_returns_a_read_response_to_the_requester(self):
     """A read request makes a round trip between Socket and Home."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.read("address 0x1000")
+    request = zhujiang.socket.read("0x1000")
 
     self.assertEqual([request], zhujiang.socket.sent_messages)
     self.assertEqual("cc", request.source_name)
     self.assertEqual("home", request.target_name)
     self.assertEqual("read_request", request.message_type)
-    self.assertEqual("address 0x1000", request.payload)
+    self.assertEqual("0x1000", request.address)
+    self.assertIsNone(request.payload)
     self.assertEqual(0, request.transaction_id)
     self.assertIsNone(zhujiang.socket.read_response_for(request))
 
@@ -28,6 +29,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("cc", response.target_name)
     self.assertEqual("read_response", response.message_type)
     self.assertEqual("read data", response.payload)
+    self.assertEqual(request.address, response.address)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual("home", zhujiang.ring.in_flight[0].current_node_name)
 
@@ -45,7 +47,7 @@ class ZhujiangTest(unittest.TestCase):
   def test_run_until_idle_completes_a_read_request(self):
     """The top-level helper advances the full read round trip."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.read("address 0x1000")
+    request = zhujiang.socket.read("0x1000")
 
     steps = zhujiang.run_until_idle()
 
@@ -62,7 +64,7 @@ class ZhujiangTest(unittest.TestCase):
   def test_run_until_idle_rejects_an_insufficient_step_limit(self):
     """The helper must not loop forever when work remains."""
     zhujiang = Zhujiang()
-    zhujiang.socket.read("address 0x1000")
+    zhujiang.socket.read("0x1000")
 
     with self.assertRaisesRegex(RuntimeError, "system did not become idle"):
       zhujiang.run_until_idle(max_steps=4)
@@ -129,12 +131,13 @@ class ZhujiangTest(unittest.TestCase):
   def test_home_returns_a_write_response_to_the_requester(self):
     """A write request makes a round trip between Socket and Home."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.write("value 1")
+    request = zhujiang.socket.write("0x1000", "value 1")
 
     self.assertEqual([request], zhujiang.socket.sent_messages)
     self.assertEqual("cc", request.source_name)
     self.assertEqual("home", request.target_name)
     self.assertEqual("write_request", request.message_type)
+    self.assertEqual("0x1000", request.address)
     self.assertEqual("value 1", request.payload)
     self.assertEqual(0, request.transaction_id)
     self.assertIsNone(zhujiang.socket.write_response_for(request))
@@ -148,6 +151,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("cc", response.target_name)
     self.assertEqual("write_response", response.message_type)
     self.assertEqual("write complete", response.payload)
+    self.assertEqual(request.address, response.address)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual([response], zhujiang.socket.received_messages)
     self.assertIs(response, zhujiang.socket.write_response_for(request))
@@ -156,8 +160,8 @@ class ZhujiangTest(unittest.TestCase):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
     requests = [
-      zhujiang.socket.write("value 1"),
-      zhujiang.socket.write("value 2"),
+      zhujiang.socket.write("0x1000", "value 1"),
+      zhujiang.socket.write("0x2000", "value 2"),
     ]
 
     zhujiang.run_until_idle()
@@ -181,8 +185,8 @@ class ZhujiangTest(unittest.TestCase):
     """Responses retain the IDs assigned to their requests."""
     zhujiang = Zhujiang()
     requests = [
-      zhujiang.socket.read("address 0x1000"),
-      zhujiang.socket.read("address 0x2000"),
+      zhujiang.socket.read("0x1000"),
+      zhujiang.socket.read("0x2000"),
     ]
 
     zhujiang.step()

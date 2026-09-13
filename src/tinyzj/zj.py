@@ -53,20 +53,26 @@ class Socket(Endpoint):
     self.sent_messages = []
     self._responses = {}
 
-  def read(self, payload=None):
-    return self._send_request("home", "read_request", payload)
+  def read(self, address):
+    return self._send_request("home", "read_request", address=address)
 
   def io_request(self, payload=None):
     return self._send_request("io", "io_request", payload)
 
-  def write(self, payload=None):
-    return self._send_request("home", "write_request", payload)
+  def write(self, address, data):
+    return self._send_request(
+      "home",
+      "write_request",
+      payload=data,
+      address=address,
+    )
 
-  def _send_request(self, target_name, message_type, payload):
+  def _send_request(self, target_name, message_type, payload=None, address=None):
     request = Message(
       "cc",
       target_name,
       payload=payload,
+      address=address,
       message_type=message_type,
     )
     self.sent_messages.append(request)
@@ -111,6 +117,7 @@ class HomeWrapper(Endpoint):
         "home",
         message.source_name,
         payload="read data",
+        address=message.address,
         message_type="read_response",
         transaction_id=message.transaction_id,
       )
@@ -121,6 +128,7 @@ class HomeWrapper(Endpoint):
         "home",
         message.source_name,
         payload="write complete",
+        address=message.address,
         message_type="write_response",
         transaction_id=message.transaction_id,
       )
