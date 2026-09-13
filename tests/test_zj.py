@@ -77,8 +77,14 @@ class ZhujiangTest(unittest.TestCase):
   def test_io_wrapper_returns_a_response_to_the_requester(self):
     """An io request makes a round trip between Socket and IoWrapper."""
     zhujiang = Zhujiang()
-    request = Message("cc", "io", message_type="io_request")
-    zhujiang.ring.inject(request)
+    request = zhujiang.socket.io_request("device 0")
+
+    self.assertEqual([request], zhujiang.socket.sent_messages)
+    self.assertEqual("cc", request.source_name)
+    self.assertEqual("io", request.target_name)
+    self.assertEqual("io_request", request.message_type)
+    self.assertEqual("device 0", request.payload)
+    self.assertEqual(0, request.transaction_id)
 
     steps = zhujiang.run_until_idle()
 

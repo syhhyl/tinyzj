@@ -64,6 +64,17 @@ class Socket(Endpoint):
     self.ring.inject(request)
     return request
 
+  def io_request(self, payload=None):
+    request = Message(
+      "cc",
+      "io",
+      payload=payload,
+      message_type="io_request",
+    )
+    self.sent_messages.append(request)
+    self.ring.inject(request)
+    return request
+
   def read_response_for(self, request):
     return self._read_responses.get(request.transaction_id)
 
