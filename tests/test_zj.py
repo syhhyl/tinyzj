@@ -137,6 +137,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("write_request", request.message_type)
     self.assertEqual("value 1", request.payload)
     self.assertEqual(0, request.transaction_id)
+    self.assertIsNone(zhujiang.socket.write_response_for(request))
 
     zhujiang.run_until_idle()
 
@@ -149,6 +150,21 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("write complete", response.payload)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual([response], zhujiang.socket.received_messages)
+    self.assertIs(response, zhujiang.socket.write_response_for(request))
+
+  def test_socket_matches_multiple_write_responses(self):
+    """Each write request can query its own response."""
+    zhujiang = Zhujiang()
+    requests = [
+      zhujiang.socket.write("value 1"),
+      zhujiang.socket.write("value 2"),
+    ]
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual([0, 1], [request.transaction_id for request in requests])
+    for request, response in zip(requests, zhujiang.home.sent_messages):
+      self.assertIs(response, zhujiang.socket.write_response_for(request))
 
   def test_home_does_not_respond_to_unsupported_message_types(self):
     """Only teaching read and write requests receive Home responses."""
@@ -208,6 +224,17 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertEqual([message], zhujiang.socket.received_messages)
     self.assertIsNone(zhujiang.socket.io_response_for(request))
+
+  def test_socket_only_indexes_write_responses(self):
+    """Other messages remain available only through the general inbox."""
+    zhujiang = Zhujiang()
+    request = Message("cc", "home", message_type="write_request", transaction_id=3)
+    message = Message("io", "cc", message_type="io_response", transaction_id=3)
+
+    zhujiang.socket.receive(message)
+
+    self.assertEqual([message], zhujiang.socket.received_messages)
+    self.assertIsNone(zhujiang.socket.write_response_for(request))
 
 
 if __name__ == "__main__":
