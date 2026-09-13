@@ -51,9 +51,7 @@ class Socket(Endpoint):
     super().__init__()
     self.ring = ring
     self.sent_messages = []
-    self._read_responses = {}
-    self._io_responses = {}
-    self._write_responses = {}
+    self._responses = {}
 
   def read(self, payload=None):
     return self._send_request("home", "read_request", payload)
@@ -76,22 +74,26 @@ class Socket(Endpoint):
     return request
 
   def read_response_for(self, request):
-    return self._read_responses.get(request.transaction_id)
+    return self._response_for("read_response", request)
 
   def io_response_for(self, request):
-    return self._io_responses.get(request.transaction_id)
+    return self._response_for("io_response", request)
 
   def write_response_for(self, request):
-    return self._write_responses.get(request.transaction_id)
+    return self._response_for("write_response", request)
+
+  def _response_for(self, response_type, request):
+    return self._responses.get((response_type, request.transaction_id))
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type == "read_response":
-      self._read_responses[message.transaction_id] = message
-    elif message.message_type == "io_response":
-      self._io_responses[message.transaction_id] = message
-    elif message.message_type == "write_response":
-      self._write_responses[message.transaction_id] = message
+    if message.message_type in (
+      "read_response",
+      "io_response",
+      "write_response",
+    ):
+      key = (message.message_type, message.transaction_id)
+      self._responses[key] = message
 
 
 class HomeWrapper(Endpoint):
