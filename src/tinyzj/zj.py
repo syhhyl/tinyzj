@@ -49,6 +49,9 @@ class Socket(Endpoint):
     self.ring.inject(request)
     return request
 
+  def read_response_for(self, request):
+    return self.read_responses.get(request.transaction_id)
+
   def receive(self, message):
     super().receive(message)
     if message.message_type == "read_response":
