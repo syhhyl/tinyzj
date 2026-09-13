@@ -36,7 +36,7 @@ class Socket(Endpoint):
     super().__init__()
     self.ring = ring
     self.sent_messages = []
-    self.read_responses = {}
+    self._read_responses = {}
 
   def read(self, payload=None):
     request = Message(
@@ -50,12 +50,12 @@ class Socket(Endpoint):
     return request
 
   def read_response_for(self, request):
-    return self.read_responses.get(request.transaction_id)
+    return self._read_responses.get(request.transaction_id)
 
   def receive(self, message):
     super().receive(message)
     if message.message_type == "read_response":
-      self.read_responses[message.transaction_id] = message
+      self._read_responses[message.transaction_id] = message
 
 
 class HomeWrapper(Endpoint):

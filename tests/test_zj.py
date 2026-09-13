@@ -39,10 +39,6 @@ class ZhujiangTest(unittest.TestCase):
 
     zhujiang.ring.step()
     self.assertEqual([response], zhujiang.socket.received_messages)
-    self.assertEqual(
-      {request.transaction_id: response},
-      zhujiang.socket.read_responses,
-    )
     self.assertIs(response, zhujiang.socket.read_response_for(request))
     self.assertEqual([], zhujiang.ring.in_flight)
 
@@ -82,25 +78,19 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(response_ids, [
       response.transaction_id for response in zhujiang.socket.received_messages
     ])
-    self.assertEqual(
-      {
-        response.transaction_id: response
-        for response in zhujiang.home.sent_messages
-      },
-      zhujiang.socket.read_responses,
-    )
     for request, response in zip(requests, zhujiang.home.sent_messages):
       self.assertIs(response, zhujiang.socket.read_response_for(request))
 
   def test_socket_only_indexes_read_responses(self):
     """Other messages remain available only through the general inbox."""
     zhujiang = Zhujiang()
+    request = Message("cc", "home", message_type="read_request", transaction_id=3)
     message = Message("io", "cc", message_type="write_response", transaction_id=3)
 
     zhujiang.socket.receive(message)
 
     self.assertEqual([message], zhujiang.socket.received_messages)
-    self.assertEqual({}, zhujiang.socket.read_responses)
+    self.assertIsNone(zhujiang.socket.read_response_for(request))
 
 
 if __name__ == "__main__":
