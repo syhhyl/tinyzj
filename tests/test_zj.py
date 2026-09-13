@@ -126,8 +126,8 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([request], zhujiang.io_wrapper.received_messages)
     self.assertEqual([], zhujiang.io_wrapper.sent_messages)
 
-  def test_home_does_not_respond_to_other_message_types(self):
-    """Only the teaching read request has a response in this iteration."""
+  def test_home_returns_a_write_response_to_the_requester(self):
+    """A write request makes a round trip between Socket and Home."""
     zhujiang = Zhujiang()
     request = zhujiang.socket.write("value 1")
 
@@ -141,8 +141,25 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.run_until_idle()
 
     self.assertEqual([request], zhujiang.home.received_messages)
+    self.assertEqual(1, len(zhujiang.home.sent_messages))
+    response = zhujiang.home.sent_messages[0]
+    self.assertEqual("home", response.source_name)
+    self.assertEqual("cc", response.target_name)
+    self.assertEqual("write_response", response.message_type)
+    self.assertEqual("write complete", response.payload)
+    self.assertEqual(request.transaction_id, response.transaction_id)
+    self.assertEqual([response], zhujiang.socket.received_messages)
+
+  def test_home_does_not_respond_to_unsupported_message_types(self):
+    """Only teaching read and write requests receive Home responses."""
+    zhujiang = Zhujiang()
+    request = Message("cc", "home", message_type="other_request")
+    zhujiang.ring.inject(request)
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual([], zhujiang.home.sent_messages)
-    self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_home_preserves_ids_for_multiple_read_requests(self):
     """Responses retain the IDs assigned to their requests."""

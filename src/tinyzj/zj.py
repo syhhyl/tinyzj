@@ -108,6 +108,16 @@ class HomeWrapper(Endpoint):
       )
       self.sent_messages.append(response)
       self.ring.inject(response)
+    elif message.message_type == "write_request":
+      response = Message(
+        "home",
+        message.source_name,
+        payload="write complete",
+        message_type="write_response",
+        transaction_id=message.transaction_id,
+      )
+      self.sent_messages.append(response)
+      self.ring.inject(response)
     
 
 class IoWrapper(Endpoint):
