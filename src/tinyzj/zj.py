@@ -14,7 +14,7 @@ class Zhujiang:
     
     self.socket = Socket(self.ring)
     self.home = HomeWrapper(self.ring)
-    self.io_wrapper = IoWrapper()
+    self.io_wrapper = IoWrapper(self.ring)
 
     self.ring.connect("cc", self.socket)
     self.ring.connect("home", self.home)
@@ -96,4 +96,21 @@ class HomeWrapper(Endpoint):
     
 
 class IoWrapper(Endpoint):
-  pass
+
+  def __init__(self, ring):
+    super().__init__()
+    self.ring = ring
+    self.sent_messages = []
+
+  def receive(self, message):
+    super().receive(message)
+    if message.message_type == "io_request":
+      response = Message(
+        "io",
+        message.source_name,
+        payload="io data",
+        message_type="io_response",
+        transaction_id=message.transaction_id,
+      )
+      self.sent_messages.append(response)
+      self.ring.inject(response)
