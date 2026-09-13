@@ -117,13 +117,15 @@ class HomeWrapper(Endpoint):
   def receive(self, message):
     super().receive(message)
     if message.message_type == "read_request":
+      payload, data_present = self.dj.read(message.address)
       response = Message(
         "home",
         message.source_name,
-        payload=self.dj.read(message.address),
+        payload=payload,
         address=message.address,
         message_type="read_response",
         transaction_id=message.transaction_id,
+        data_present=data_present,
       )
       self.sent_messages.append(response)
       self.ring.inject(response)

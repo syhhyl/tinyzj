@@ -16,6 +16,7 @@ class Message:
     address=None,
     message_type="message",
     transaction_id=None,
+    data_present=None,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -28,6 +29,7 @@ class Message:
     self.address = address
     self.message_type = message_type
     self.transaction_id = transaction_id
+    self.data_present = data_present
 
 class Injection:
 

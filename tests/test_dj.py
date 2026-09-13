@@ -9,8 +9,13 @@ class DongJiangTest(unittest.TestCase):
 
     dongjiang.write("0x1000", "value 1")
 
-    self.assertEqual("value 1", dongjiang.read("0x1000"))
-    self.assertEqual("read data", dongjiang.read("0x2000"))
+    value, data_present = dongjiang.read("0x1000")
+    self.assertEqual("value 1", value)
+    self.assertTrue(data_present)
+
+    value, data_present = dongjiang.read("0x2000")
+    self.assertEqual("read data", value)
+    self.assertFalse(data_present)
 
   def test_rejects_a_missing_address(self):
     dongjiang = DongJiang()

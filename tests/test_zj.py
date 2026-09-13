@@ -30,6 +30,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("read_response", response.message_type)
     self.assertEqual("read data", response.payload)
     self.assertEqual(request.address, response.address)
+    self.assertFalse(response.data_present)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual("home", zhujiang.ring.in_flight[0].current_node_name)
 
@@ -190,6 +191,7 @@ class ZhujiangTest(unittest.TestCase):
     read_response = zhujiang.socket.read_response_for(read_request)
     self.assertEqual("0x1000", read_response.address)
     self.assertEqual("value 1", read_response.payload)
+    self.assertTrue(read_response.data_present)
 
   def test_home_keeps_data_for_different_addresses_separate(self):
     """Writes at different addresses do not overwrite each other."""

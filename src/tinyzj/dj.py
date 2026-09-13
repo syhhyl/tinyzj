@@ -5,7 +5,10 @@ class DongJiang:
 
   def read(self, address):
     self._require_address(address)
-    return self.data_by_address.get(address, "read data")
+    return (
+      self.data_by_address.get(address, "read data"),
+      address in self.data_by_address,
+    )
 
   def write(self, address, data):
     self._require_address(address)
