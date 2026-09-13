@@ -42,6 +42,38 @@ class ZhujiangTest(unittest.TestCase):
     self.assertIs(response, zhujiang.socket.read_response_for(request))
     self.assertEqual([], zhujiang.ring.in_flight)
 
+  def test_run_until_idle_completes_a_read_request(self):
+    """The top-level helper advances the full read round trip."""
+    zhujiang = Zhujiang()
+    request = zhujiang.socket.read("address 0x1000")
+
+    steps = zhujiang.run_until_idle()
+
+    self.assertEqual(5, steps)
+    self.assertIsNotNone(zhujiang.socket.read_response_for(request))
+    self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_run_until_idle_leaves_an_idle_system_unchanged(self):
+    """No steps are needed when no messages are in flight."""
+    zhujiang = Zhujiang()
+
+    self.assertEqual(0, zhujiang.run_until_idle())
+
+  def test_run_until_idle_rejects_an_insufficient_step_limit(self):
+    """The helper must not loop forever when work remains."""
+    zhujiang = Zhujiang()
+    zhujiang.socket.read("address 0x1000")
+
+    with self.assertRaisesRegex(RuntimeError, "system did not become idle"):
+      zhujiang.run_until_idle(max_steps=4)
+
+  def test_run_until_idle_rejects_a_negative_step_limit(self):
+    """A step limit cannot be negative."""
+    zhujiang = Zhujiang()
+
+    with self.assertRaisesRegex(ValueError, "max_steps must be non-negative"):
+      zhujiang.run_until_idle(max_steps=-1)
+
   def test_home_does_not_respond_to_other_message_types(self):
     """Only the teaching read request has a response in this iteration."""
     zhujiang = Zhujiang()

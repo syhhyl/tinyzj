@@ -23,6 +23,18 @@ class Zhujiang:
   def step(self):
     self.ring.step()
 
+  def run_until_idle(self, max_steps=100):
+    if max_steps < 0:
+      raise ValueError("max_steps must be non-negative")
+
+    steps = 0
+    while self.ring.in_flight:
+      if steps == max_steps:
+        raise RuntimeError("system did not become idle")
+      self.step()
+      steps += 1
+    return steps
+
 
 class Endpoint:
 
