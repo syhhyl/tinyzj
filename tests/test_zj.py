@@ -85,6 +85,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("io_request", request.message_type)
     self.assertEqual("device 0", request.payload)
     self.assertEqual(0, request.transaction_id)
+    self.assertIsNone(zhujiang.socket.io_response_for(request))
 
     steps = zhujiang.run_until_idle()
 
@@ -98,6 +99,21 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("io data", response.payload)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertEqual([response], zhujiang.socket.received_messages)
+    self.assertIs(response, zhujiang.socket.io_response_for(request))
+
+  def test_socket_matches_multiple_io_responses(self):
+    """Each io request can query its own response."""
+    zhujiang = Zhujiang()
+    requests = [
+      zhujiang.socket.io_request("device 0"),
+      zhujiang.socket.io_request("device 1"),
+    ]
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual([0, 1], [request.transaction_id for request in requests])
+    for request, response in zip(requests, zhujiang.io_wrapper.sent_messages):
+      self.assertIs(response, zhujiang.socket.io_response_for(request))
 
   def test_io_wrapper_does_not_respond_to_other_message_types(self):
     """Only the teaching io request has a response in this iteration."""
@@ -159,6 +175,17 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertEqual([message], zhujiang.socket.received_messages)
     self.assertIsNone(zhujiang.socket.read_response_for(request))
+
+  def test_socket_only_indexes_io_responses(self):
+    """Other messages remain available only through the general inbox."""
+    zhujiang = Zhujiang()
+    request = Message("cc", "io", message_type="io_request", transaction_id=3)
+    message = Message("home", "cc", message_type="read_response", transaction_id=3)
+
+    zhujiang.socket.receive(message)
+
+    self.assertEqual([message], zhujiang.socket.received_messages)
+    self.assertIsNone(zhujiang.socket.io_response_for(request))
 
 
 if __name__ == "__main__":
