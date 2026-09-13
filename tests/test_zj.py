@@ -248,6 +248,23 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([request], zhujiang.home.received_messages)
     self.assertEqual([], zhujiang.home.sent_messages)
 
+  def test_home_rejects_direct_requests_without_an_address(self):
+    """Home protects its state when a request bypasses Socket."""
+    for message_type in ("read_request", "write_request"):
+      with self.subTest(message_type=message_type):
+        zhujiang = Zhujiang()
+        request = Message("cc", "home", message_type=message_type)
+        injection = zhujiang.ring.inject(request)
+
+        zhujiang.step()
+        with self.assertRaisesRegex(ValueError, "home request needs an address"):
+          zhujiang.step()
+
+        self.assertEqual([request], zhujiang.home.received_messages)
+        self.assertEqual([], zhujiang.home.sent_messages)
+        self.assertEqual({}, zhujiang.home.data_by_address)
+        self.assertEqual([injection], zhujiang.ring.in_flight)
+
   def test_home_preserves_ids_for_multiple_read_requests(self):
     """Responses retain the IDs assigned to their requests."""
     zhujiang = Zhujiang()

@@ -117,6 +117,11 @@ class HomeWrapper(Endpoint):
 
   def receive(self, message):
     super().receive(message)
+    if (
+      message.message_type in ("read_request", "write_request")
+      and message.address is None
+    ):
+      raise ValueError("home request needs an address")
     if message.message_type == "read_request":
       response = Message(
         "home",
