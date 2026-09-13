@@ -205,6 +205,24 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("value 1", zhujiang.socket.read_response_for(first_read).payload)
     self.assertEqual("value 2", zhujiang.socket.read_response_for(second_read).payload)
 
+  def test_home_reads_the_last_write_to_an_address(self):
+    """Later writes replace earlier writes at the same address."""
+    zhujiang = Zhujiang()
+    first_write = zhujiang.socket.write("0x1000", "value 1")
+    second_write = zhujiang.socket.write("0x1000", "value 2")
+
+    zhujiang.run_until_idle()
+    read_request = zhujiang.socket.read("0x1000")
+    zhujiang.run_until_idle()
+
+    self.assertIsNotNone(zhujiang.socket.write_response_for(first_write))
+    self.assertIsNotNone(zhujiang.socket.write_response_for(second_write))
+    self.assertEqual("value 2", zhujiang.home.data_by_address["0x1000"])
+    self.assertEqual(
+      "value 2",
+      zhujiang.socket.read_response_for(read_request).payload,
+    )
+
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
