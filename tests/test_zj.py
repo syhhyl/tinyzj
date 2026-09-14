@@ -562,6 +562,39 @@ class ZhujiangTest(unittest.TestCase):
     )
     self.assertIs(first_response, zhujiang.socket.read_response_for(request))
 
+  def test_ring_retries_a_duplicate_response_after_socket_rejects_it(self):
+    """A failed delivery remains in flight and is observable on each retry."""
+    zhujiang = Zhujiang()
+    request = zhujiang.socket.read("0x1000")
+    zhujiang.run_until_idle()
+    first_response = zhujiang.socket.read_response_for(request)
+    duplicate_response = Message(
+      "home",
+      "cc",
+      payload="duplicate data",
+      message_type="read_response",
+      transaction_id=request.transaction_id,
+    )
+    injection = zhujiang.ring.inject(duplicate_response)
+
+    zhujiang.step()
+    zhujiang.step()
+    self.assertEqual("cc", injection.current_node_name)
+
+    for delivery_count in (1, 2):
+      with self.subTest(delivery_count=delivery_count):
+        with self.assertRaisesRegex(ValueError, "response already received"):
+          zhujiang.step()
+        self.assertEqual([injection], zhujiang.ring.in_flight)
+        self.assertEqual(
+          [first_response] + [duplicate_response] * delivery_count,
+          zhujiang.socket.received_messages,
+        )
+        self.assertIs(
+          first_response,
+          zhujiang.socket.read_response_for(request),
+        )
+
 
 if __name__ == "__main__":
   unittest.main()
