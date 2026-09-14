@@ -20,6 +20,18 @@ class RecordingEndpoint:
     self.received_messages.append(message)
 
 
+class RejectingEndpoint(RecordingEndpoint):
+
+  def __init__(self, rejected_message):
+    super().__init__()
+    self.rejected_message = rejected_message
+
+  def receive(self, message):
+    super().receive(message)
+    if message is self.rejected_message:
+      raise ValueError("message rejected")
+
+
 def connect_recording_endpoints(ring):
   endpoints = {}
   for node in ring.nodes:
@@ -127,6 +139,28 @@ class DeliveryTest(unittest.TestCase):
 
     self.assertEqual(messages, endpoints["home"].received_messages)
     self.assertEqual([], ring.in_flight)
+
+  def test_step_keeps_an_entire_arrived_batch_after_a_later_delivery_fails(self):
+    """A later delivery error prevents removal of earlier delivered messages."""
+    ring = make_ring()
+    first_message = Message("home", "home", "first local request")
+    rejected_message = Message("home", "home", "rejected local request")
+    endpoint = RejectingEndpoint(rejected_message)
+    ring.connect("home", endpoint)
+    injections = [
+      ring.inject(first_message),
+      ring.inject(rejected_message),
+    ]
+
+    for delivery_count in (1, 2):
+      with self.subTest(delivery_count=delivery_count):
+        with self.assertRaisesRegex(ValueError, "message rejected"):
+          ring.step()
+        self.assertEqual(injections, ring.in_flight)
+        self.assertEqual(
+          [first_message, rejected_message] * delivery_count,
+          endpoint.received_messages,
+        )
 
   def test_step_rejects_delivery_to_an_unconnected_target(self):
     """An arrived message remains in flight when its target is disconnected."""
