@@ -196,6 +196,28 @@ class DeliveryTest(unittest.TestCase):
     self.assertEqual("cc", moving.current_node_name)
     self.assertEqual("home", endpoint.injected.current_node_name)
 
+  def test_step_retries_a_failed_head_before_later_arrived_messages(self):
+    """A persistent head failure prevents later arrivals from being attempted."""
+    ring = make_ring()
+    rejected_message = Message("home", "home", "rejected local request")
+    later_message = Message("home", "home", "later local request")
+    endpoint = RejectingEndpoint(rejected_message)
+    ring.connect("home", endpoint)
+    injections = [
+      ring.inject(rejected_message),
+      ring.inject(later_message),
+    ]
+
+    for attempt_count in (1, 2):
+      with self.subTest(attempt_count=attempt_count):
+        with self.assertRaisesRegex(ValueError, "message rejected"):
+          ring.step()
+        self.assertEqual(injections, ring.in_flight)
+        self.assertEqual(
+          [rejected_message] * attempt_count,
+          endpoint.received_messages,
+        )
+
   def test_step_rejects_delivery_to_an_unconnected_target(self):
     """An arrived message remains in flight when its target is disconnected."""
     ring = make_ring()
