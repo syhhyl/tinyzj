@@ -122,6 +122,8 @@ class Socket(Endpoint):
       raise ValueError(f"expected response from {source_name}")
 
     key = (message.message_type, message.transaction_id)
+    if key in self._responses:
+      raise ValueError("response already received")
     self._responses[key] = message
 
 

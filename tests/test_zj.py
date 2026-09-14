@@ -531,8 +531,8 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([message], zhujiang.socket.received_messages)
     self.assertEqual({}, zhujiang.socket._responses)
 
-  def test_socket_replaces_a_response_with_a_later_valid_duplicate(self):
-    """Current response indexing keeps the last valid duplicate."""
+  def test_socket_rejects_a_later_valid_duplicate_response(self):
+    """A completed transaction keeps its first indexed response."""
     zhujiang = Zhujiang()
     request = zhujiang.socket.read("0x1000")
     first_response = Message(
@@ -553,13 +553,14 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.socket.receive(first_response)
     self.assertIs(first_response, zhujiang.socket.read_response_for(request))
 
-    zhujiang.socket.receive(second_response)
+    with self.assertRaisesRegex(ValueError, "response already received"):
+      zhujiang.socket.receive(second_response)
 
     self.assertEqual(
       [first_response, second_response],
       zhujiang.socket.received_messages,
     )
-    self.assertIs(second_response, zhujiang.socket.read_response_for(request))
+    self.assertIs(first_response, zhujiang.socket.read_response_for(request))
 
 
 if __name__ == "__main__":
