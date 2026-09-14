@@ -439,75 +439,74 @@ class ZhujiangTest(unittest.TestCase):
     for request, response in zip(requests, zhujiang.home.sent_messages):
       self.assertIs(response, zhujiang.socket.read_response_for(request))
 
-  def test_socket_only_indexes_read_responses(self):
-    """Other messages remain available only through the general inbox."""
+  def test_socket_rejects_a_response_for_the_wrong_request_type(self):
+    """An inbound response must match the sent request type and ID."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    message = Message(
-      "io",
-      "cc",
-      message_type="write_response",
-      transaction_id=request.transaction_id,
+    requests = (
+      zhujiang.socket.read("0x1000"),
+      zhujiang.socket.write("0x2000", "value 1"),
+      zhujiang.socket.io_request("device 0"),
+    )
+    responses = (
+      ("write_response", "home"),
+      ("io_response", "io"),
+      ("read_response", "home"),
     )
 
-    zhujiang.socket.receive(message)
+    for request, (message_type, source_name) in zip(requests, responses):
+      with self.subTest(
+        request_type=request.message_type,
+        response_type=message_type,
+      ):
+        message = Message(
+          source_name,
+          "cc",
+          message_type=message_type,
+          transaction_id=request.transaction_id,
+        )
+        with self.assertRaisesRegex(ValueError, "response has no matching request"):
+          zhujiang.socket.receive(message)
+        self.assertIsNone(
+          zhujiang.socket._responses.get(
+            (message.message_type, message.transaction_id)
+          )
+        )
 
-    self.assertEqual([message], zhujiang.socket.received_messages)
-    self.assertIsNone(zhujiang.socket.read_response_for(request))
-
-  def test_socket_only_indexes_io_responses(self):
-    """Other messages remain available only through the general inbox."""
+  def test_socket_rejects_responses_from_the_wrong_source(self):
+    """Each response type must arrive from its expected endpoint."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.io_request("device 0")
-    message = Message(
-      "home",
-      "cc",
-      message_type="read_response",
-      transaction_id=request.transaction_id,
+    cases = (
+      (zhujiang.socket.read("0x1000"), "read_response", "io", "home"),
+      (
+        zhujiang.socket.write("0x2000", "value 1"),
+        "write_response",
+        "io",
+        "home",
+      ),
+      (zhujiang.socket.io_request("device 0"), "io_response", "home", "io"),
     )
 
-    zhujiang.socket.receive(message)
+    for request, message_type, source_name, expected_source in cases:
+      with self.subTest(message_type=message_type):
+        forged_response = Message(
+          source_name,
+          "cc",
+          message_type=message_type,
+          transaction_id=request.transaction_id,
+        )
+        with self.assertRaisesRegex(
+          ValueError,
+          f"expected response from {expected_source}",
+        ):
+          zhujiang.socket.receive(forged_response)
+        self.assertIsNone(
+          zhujiang.socket._responses.get(
+            (forged_response.message_type, forged_response.transaction_id)
+          )
+        )
 
-    self.assertEqual([message], zhujiang.socket.received_messages)
-    self.assertIsNone(zhujiang.socket.io_response_for(request))
-
-  def test_socket_only_indexes_write_responses(self):
-    """Other messages remain available only through the general inbox."""
-    zhujiang = Zhujiang()
-    request = zhujiang.socket.write("0x1000", "value 1")
-    message = Message(
-      "io",
-      "cc",
-      message_type="io_response",
-      transaction_id=request.transaction_id,
-    )
-
-    zhujiang.socket.receive(message)
-
-    self.assertEqual([message], zhujiang.socket.received_messages)
-    self.assertIsNone(zhujiang.socket.write_response_for(request))
-
-  def test_socket_indexes_a_read_response_from_the_wrong_source(self):
-    """Current inbound lookup does not validate the response source."""
-    zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    forged_response = Message(
-      "io",
-      "cc",
-      payload="forged data",
-      message_type="read_response",
-      transaction_id=request.transaction_id,
-    )
-
-    zhujiang.socket.receive(forged_response)
-
-    self.assertIs(
-      forged_response,
-      zhujiang.socket.read_response_for(request),
-    )
-
-  def test_socket_indexes_a_response_received_before_its_request(self):
-    """Current inbound lookup does not require an existing request."""
+  def test_socket_rejects_a_response_received_before_its_request(self):
+    """An inbound response requires an already sent matching request."""
     zhujiang = Zhujiang()
     early_response = Message(
       "home",
@@ -517,14 +516,20 @@ class ZhujiangTest(unittest.TestCase):
       transaction_id=0,
     )
 
-    zhujiang.socket.receive(early_response)
-    request = zhujiang.socket.read("0x1000")
+    with self.assertRaisesRegex(ValueError, "response has no matching request"):
+      zhujiang.socket.receive(early_response)
 
-    self.assertEqual(early_response.transaction_id, request.transaction_id)
-    self.assertIs(
-      early_response,
-      zhujiang.socket.read_response_for(request),
-    )
+    self.assertEqual({}, zhujiang.socket._responses)
+
+  def test_socket_keeps_non_response_messages_in_the_general_inbox(self):
+    """Inbound validation only applies to the known response types."""
+    zhujiang = Zhujiang()
+    message = Message("home", "cc", message_type="notification")
+
+    zhujiang.socket.receive(message)
+
+    self.assertEqual([message], zhujiang.socket.received_messages)
+    self.assertEqual({}, zhujiang.socket._responses)
 
 
 if __name__ == "__main__":

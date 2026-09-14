@@ -101,13 +101,28 @@ class Socket(Endpoint):
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type in (
-      "read_response",
-      "io_response",
-      "write_response",
-    ):
-      key = (message.message_type, message.transaction_id)
-      self._responses[key] = message
+    response_requirements = {
+      "read_response": ("read_request", "home"),
+      "write_response": ("write_request", "home"),
+      "io_response": ("io_request", "io"),
+    }
+    if message.message_type not in response_requirements:
+      return
+
+    request_type, source_name = response_requirements[message.message_type]
+    matching_requests = [
+      request
+      for request in self.sent_messages
+      if request.message_type == request_type
+      and request.transaction_id == message.transaction_id
+    ]
+    if not matching_requests:
+      raise ValueError("response has no matching request")
+    if message.source_name != source_name:
+      raise ValueError(f"expected response from {source_name}")
+
+    key = (message.message_type, message.transaction_id)
+    self._responses[key] = message
 
 
 class HomeWrapper(Endpoint):
