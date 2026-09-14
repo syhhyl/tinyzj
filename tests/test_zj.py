@@ -286,6 +286,41 @@ class ZhujiangTest(unittest.TestCase):
       [message.message_type for message in zhujiang.socket.received_messages],
     )
 
+  def test_socket_queries_change_as_staggered_responses_arrive(self):
+    """Queries expose no response, partial completion, then full completion."""
+    zhujiang = Zhujiang()
+    read_request = zhujiang.socket.read("0x1000")
+
+    zhujiang.step()
+    io_request = zhujiang.socket.io_request("device 0")
+    zhujiang.step()
+    zhujiang.step()
+    zhujiang.step()
+
+    self.assertIsNone(zhujiang.socket.read_response_for(read_request))
+    self.assertIsNone(zhujiang.socket.io_response_for(io_request))
+
+    zhujiang.step()
+
+    read_response = zhujiang.socket.read_response_for(read_request)
+    self.assertIsNotNone(read_response)
+    self.assertIsNone(zhujiang.socket.io_response_for(io_request))
+    self.assertEqual([read_response], zhujiang.socket.received_messages)
+    self.assertNotEqual([], zhujiang.ring.in_flight)
+
+    zhujiang.step()
+
+    io_response = zhujiang.socket.io_response_for(io_request)
+    self.assertIsNotNone(io_response)
+    self.assertEqual(
+      [read_response, io_response],
+      zhujiang.socket.received_messages,
+    )
+    self.assertEqual([], zhujiang.ring.in_flight)
+    self.assertEqual(0, zhujiang.run_until_idle())
+    self.assertIs(read_response, zhujiang.socket.read_response_for(read_request))
+    self.assertIs(io_response, zhujiang.socket.io_response_for(io_request))
+
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
