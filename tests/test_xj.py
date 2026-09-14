@@ -33,6 +33,19 @@ class RejectingEndpoint(RecordingEndpoint):
       raise ValueError(self.error_message)
 
 
+class FailOnceEndpoint(RecordingEndpoint):
+
+  def __init__(self):
+    super().__init__()
+    self.failed = False
+
+  def receive(self, message):
+    super().receive(message)
+    if not self.failed:
+      self.failed = True
+      raise ValueError("temporary failure")
+
+
 class InjectingRejectingEndpoint(RejectingEndpoint):
 
   def __init__(
@@ -237,6 +250,32 @@ class DeliveryTest(unittest.TestCase):
     self.assertEqual(injections, ring.in_flight)
     self.assertEqual([first_message], cc_endpoint.received_messages)
     self.assertEqual([second_message], home_endpoint.received_messages)
+
+  def test_step_recovers_after_a_temporary_delivery_failure(self):
+    """A retained arrival succeeds later and normal movement resumes."""
+    ring = make_ring()
+    endpoint = FailOnceEndpoint()
+    ring.connect("home", endpoint)
+    arrived_message = Message("home", "home", "temporary request")
+    moving_message = Message("cc", "io", "moving request")
+    arrived = ring.inject(arrived_message)
+    moving = ring.inject(moving_message)
+
+    with self.assertRaisesRegex(ValueError, "temporary failure"):
+      ring.step()
+
+    self.assertEqual([arrived, moving], ring.in_flight)
+    self.assertEqual("cc", moving.current_node_name)
+
+    ring.step()
+
+    self.assertNotIn(arrived, ring.in_flight)
+    self.assertEqual([moving], ring.in_flight)
+    self.assertEqual("home", moving.current_node_name)
+    self.assertEqual(
+      [arrived_message, arrived_message],
+      endpoint.received_messages,
+    )
 
   def test_step_rejects_delivery_to_an_unconnected_target(self):
     """An arrived message remains in flight when its target is disconnected."""
