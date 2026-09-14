@@ -487,6 +487,45 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([message], zhujiang.socket.received_messages)
     self.assertIsNone(zhujiang.socket.write_response_for(request))
 
+  def test_socket_indexes_a_read_response_from_the_wrong_source(self):
+    """Current inbound lookup does not validate the response source."""
+    zhujiang = Zhujiang()
+    request = zhujiang.socket.read("0x1000")
+    forged_response = Message(
+      "io",
+      "cc",
+      payload="forged data",
+      message_type="read_response",
+      transaction_id=request.transaction_id,
+    )
+
+    zhujiang.socket.receive(forged_response)
+
+    self.assertIs(
+      forged_response,
+      zhujiang.socket.read_response_for(request),
+    )
+
+  def test_socket_indexes_a_response_received_before_its_request(self):
+    """Current inbound lookup does not require an existing request."""
+    zhujiang = Zhujiang()
+    early_response = Message(
+      "home",
+      "cc",
+      payload="early data",
+      message_type="read_response",
+      transaction_id=0,
+    )
+
+    zhujiang.socket.receive(early_response)
+    request = zhujiang.socket.read("0x1000")
+
+    self.assertEqual(early_response.transaction_id, request.transaction_id)
+    self.assertIs(
+      early_response,
+      zhujiang.socket.read_response_for(request),
+    )
+
 
 if __name__ == "__main__":
   unittest.main()
