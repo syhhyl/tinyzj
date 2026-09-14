@@ -225,6 +225,67 @@ class ZhujiangTest(unittest.TestCase):
       zhujiang.socket.read_response_for(read_request).payload,
     )
 
+  def test_home_processes_a_batch_write_before_read_in_injection_order(self):
+    """A same-address read observes an earlier write in the same batch."""
+    zhujiang = Zhujiang()
+    write_request = zhujiang.socket.write("0x1000", "value 1")
+    read_request = zhujiang.socket.read("0x1000")
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual(
+      [write_request, read_request],
+      zhujiang.home.received_messages,
+    )
+    read_response = zhujiang.socket.read_response_for(read_request)
+    self.assertEqual("value 1", read_response.payload)
+    self.assertTrue(read_response.data_present)
+    self.assertIsNotNone(zhujiang.socket.write_response_for(write_request))
+
+  def test_home_processes_a_batch_read_before_write_in_injection_order(self):
+    """A same-address read observes the old value before a later write."""
+    zhujiang = Zhujiang()
+    read_request = zhujiang.socket.read("0x1000")
+    write_request = zhujiang.socket.write("0x1000", "value 1")
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual(
+      [read_request, write_request],
+      zhujiang.home.received_messages,
+    )
+    read_response = zhujiang.socket.read_response_for(read_request)
+    self.assertEqual("read data", read_response.payload)
+    self.assertFalse(read_response.data_present)
+    self.assertEqual("value 1", zhujiang.home.dj.data_by_address["0x1000"])
+    self.assertIsNotNone(zhujiang.socket.write_response_for(write_request))
+
+  def test_socket_matches_mixed_batch_responses_by_type_and_transaction_id(self):
+    """Mixed responses remain associated with their original requests."""
+    zhujiang = Zhujiang()
+    write_request = zhujiang.socket.write("0x1000", "value 1")
+    io_request = zhujiang.socket.io_request("device 0")
+    read_request = zhujiang.socket.read("0x1000")
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual([0, 1, 2], [
+      write_request.transaction_id,
+      io_request.transaction_id,
+      read_request.transaction_id,
+    ])
+    write_response = zhujiang.socket.write_response_for(write_request)
+    io_response = zhujiang.socket.io_response_for(io_request)
+    read_response = zhujiang.socket.read_response_for(read_request)
+    self.assertEqual("write complete", write_response.payload)
+    self.assertEqual("io data", io_response.payload)
+    self.assertEqual("value 1", read_response.payload)
+    self.assertTrue(read_response.data_present)
+    self.assertEqual(
+      ["write_response", "read_response", "io_response"],
+      [message.message_type for message in zhujiang.socket.received_messages],
+    )
+
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
