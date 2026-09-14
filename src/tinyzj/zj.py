@@ -84,15 +84,19 @@ class Socket(Endpoint):
     return request
 
   def read_response_for(self, request):
-    return self._response_for("read_response", request)
+    return self._response_for("read_request", "read_response", request)
 
   def io_response_for(self, request):
-    return self._response_for("io_response", request)
+    return self._response_for("io_request", "io_response", request)
 
   def write_response_for(self, request):
-    return self._response_for("write_response", request)
+    return self._response_for("write_request", "write_response", request)
 
-  def _response_for(self, response_type, request):
+  def _response_for(self, request_type, response_type, request):
+    if request not in self.sent_messages:
+      raise ValueError("request was not sent by this socket")
+    if request.message_type != request_type:
+      raise ValueError(f"expected {request_type}")
     return self._responses.get((response_type, request.transaction_id))
 
   def receive(self, message):

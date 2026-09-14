@@ -321,40 +321,55 @@ class ZhujiangTest(unittest.TestCase):
     self.assertIs(read_response, zhujiang.socket.read_response_for(read_request))
     self.assertIs(io_response, zhujiang.socket.io_response_for(io_request))
 
-  def test_socket_query_accepts_an_unowned_request_with_a_matching_id(self):
-    """Current response lookup does not validate request ownership."""
+  def test_socket_queries_reject_unowned_requests_with_matching_ids(self):
+    """Response lookup only accepts requests sent by this Socket."""
     zhujiang = Zhujiang()
     request = zhujiang.socket.read("0x1000")
     zhujiang.run_until_idle()
-    unowned_request = Message(
-      "cc",
-      "home",
-      message_type="read_request",
-      transaction_id=request.transaction_id,
+    queries = (
+      ("read_request", zhujiang.socket.read_response_for),
+      ("write_request", zhujiang.socket.write_response_for),
+      ("io_request", zhujiang.socket.io_response_for),
     )
 
-    self.assertNotIn(unowned_request, zhujiang.socket.sent_messages)
-    self.assertIs(
-      zhujiang.socket.read_response_for(request),
-      zhujiang.socket.read_response_for(unowned_request),
-    )
+    for message_type, query in queries:
+      with self.subTest(message_type=message_type):
+        unowned_request = Message(
+          "cc",
+          "home",
+          message_type=message_type,
+          transaction_id=request.transaction_id,
+        )
+        with self.assertRaisesRegex(
+          ValueError,
+          "request was not sent by this socket",
+        ):
+          query(unowned_request)
 
-  def test_socket_query_accepts_the_wrong_request_type_with_a_matching_id(self):
-    """Current response lookup does not validate the request message type."""
+  def test_socket_queries_reject_requests_of_the_wrong_type(self):
+    """Each response query accepts only its matching request type."""
     zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    zhujiang.run_until_idle()
-    wrong_type_request = Message(
-      "cc",
-      "home",
-      message_type="write_request",
-      transaction_id=request.transaction_id,
+    requests = (
+      zhujiang.socket.read("0x1000"),
+      zhujiang.socket.write("0x2000", "value 1"),
+      zhujiang.socket.io_request("device 0"),
+    )
+    queries = (
+      zhujiang.socket.read_response_for,
+      zhujiang.socket.write_response_for,
+      zhujiang.socket.io_response_for,
     )
 
-    self.assertIs(
-      zhujiang.socket.read_response_for(request),
-      zhujiang.socket.read_response_for(wrong_type_request),
-    )
+    for query_index, query in enumerate(queries):
+      for request_index, request in enumerate(requests):
+        if query_index == request_index:
+          continue
+        with self.subTest(
+          query=query.__name__,
+          request_type=request.message_type,
+        ):
+          with self.assertRaisesRegex(ValueError, "expected .*_request"):
+            query(request)
 
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
@@ -427,8 +442,13 @@ class ZhujiangTest(unittest.TestCase):
   def test_socket_only_indexes_read_responses(self):
     """Other messages remain available only through the general inbox."""
     zhujiang = Zhujiang()
-    request = Message("cc", "home", message_type="read_request", transaction_id=3)
-    message = Message("io", "cc", message_type="write_response", transaction_id=3)
+    request = zhujiang.socket.read("0x1000")
+    message = Message(
+      "io",
+      "cc",
+      message_type="write_response",
+      transaction_id=request.transaction_id,
+    )
 
     zhujiang.socket.receive(message)
 
@@ -438,8 +458,13 @@ class ZhujiangTest(unittest.TestCase):
   def test_socket_only_indexes_io_responses(self):
     """Other messages remain available only through the general inbox."""
     zhujiang = Zhujiang()
-    request = Message("cc", "io", message_type="io_request", transaction_id=3)
-    message = Message("home", "cc", message_type="read_response", transaction_id=3)
+    request = zhujiang.socket.io_request("device 0")
+    message = Message(
+      "home",
+      "cc",
+      message_type="read_response",
+      transaction_id=request.transaction_id,
+    )
 
     zhujiang.socket.receive(message)
 
@@ -449,8 +474,13 @@ class ZhujiangTest(unittest.TestCase):
   def test_socket_only_indexes_write_responses(self):
     """Other messages remain available only through the general inbox."""
     zhujiang = Zhujiang()
-    request = Message("cc", "home", message_type="write_request", transaction_id=3)
-    message = Message("io", "cc", message_type="io_response", transaction_id=3)
+    request = zhujiang.socket.write("0x1000", "value 1")
+    message = Message(
+      "io",
+      "cc",
+      message_type="io_response",
+      transaction_id=request.transaction_id,
+    )
 
     zhujiang.socket.receive(message)
 
