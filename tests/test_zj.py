@@ -321,6 +321,41 @@ class ZhujiangTest(unittest.TestCase):
     self.assertIs(read_response, zhujiang.socket.read_response_for(read_request))
     self.assertIs(io_response, zhujiang.socket.io_response_for(io_request))
 
+  def test_socket_query_accepts_an_unowned_request_with_a_matching_id(self):
+    """Current response lookup does not validate request ownership."""
+    zhujiang = Zhujiang()
+    request = zhujiang.socket.read("0x1000")
+    zhujiang.run_until_idle()
+    unowned_request = Message(
+      "cc",
+      "home",
+      message_type="read_request",
+      transaction_id=request.transaction_id,
+    )
+
+    self.assertNotIn(unowned_request, zhujiang.socket.sent_messages)
+    self.assertIs(
+      zhujiang.socket.read_response_for(request),
+      zhujiang.socket.read_response_for(unowned_request),
+    )
+
+  def test_socket_query_accepts_the_wrong_request_type_with_a_matching_id(self):
+    """Current response lookup does not validate the request message type."""
+    zhujiang = Zhujiang()
+    request = zhujiang.socket.read("0x1000")
+    zhujiang.run_until_idle()
+    wrong_type_request = Message(
+      "cc",
+      "home",
+      message_type="write_request",
+      transaction_id=request.transaction_id,
+    )
+
+    self.assertIs(
+      zhujiang.socket.read_response_for(request),
+      zhujiang.socket.read_response_for(wrong_type_request),
+    )
+
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
