@@ -22,14 +22,15 @@ class RecordingEndpoint:
 
 class RejectingEndpoint(RecordingEndpoint):
 
-  def __init__(self, rejected_message):
+  def __init__(self, rejected_message, error_message="message rejected"):
     super().__init__()
     self.rejected_message = rejected_message
+    self.error_message = error_message
 
   def receive(self, message):
     super().receive(message)
     if message is self.rejected_message:
-      raise ValueError("message rejected")
+      raise ValueError(self.error_message)
 
 
 class InjectingRejectingEndpoint(RejectingEndpoint):
@@ -161,8 +162,8 @@ class DeliveryTest(unittest.TestCase):
     self.assertEqual(messages, endpoints["home"].received_messages)
     self.assertEqual([], ring.in_flight)
 
-  def test_step_commits_successful_deliveries_before_a_later_failure(self):
-    """Only failed and unattempted arrivals remain after a delivery error."""
+  def test_step_attempts_all_arrivals_and_commits_successes_before_raising(self):
+    """Delivery failures do not block other initially arrived messages."""
     ring = make_ring()
     first_message = Message("home", "home", "first local request")
     rejected_message = Message("home", "home", "rejected local request")
@@ -186,37 +187,56 @@ class DeliveryTest(unittest.TestCase):
 
     self.assertNotIn(first, ring.in_flight)
     self.assertEqual(
-      [rejected, unattempted, moving, endpoint.injected],
+      [rejected, moving, endpoint.injected],
       ring.in_flight,
     )
     self.assertEqual(
-      [first_message, rejected_message],
+      [first_message, rejected_message, unattempted_message],
       endpoint.received_messages,
     )
     self.assertEqual("cc", moving.current_node_name)
     self.assertEqual("home", endpoint.injected.current_node_name)
 
-  def test_step_retries_a_failed_head_before_later_arrived_messages(self):
-    """A persistent head failure prevents later arrivals from being attempted."""
+  def test_step_retries_a_failed_head_without_blocking_later_arrivals(self):
+    """A persistent head failure does not block later successful deliveries."""
     ring = make_ring()
     rejected_message = Message("home", "home", "rejected local request")
     later_message = Message("home", "home", "later local request")
     endpoint = RejectingEndpoint(rejected_message)
     ring.connect("home", endpoint)
+    rejected = ring.inject(rejected_message)
+    later = ring.inject(later_message)
+
+    with self.assertRaisesRegex(ValueError, "message rejected"):
+      ring.step()
+
+    self.assertEqual([rejected], ring.in_flight)
+    self.assertNotIn(later, ring.in_flight)
+    self.assertEqual(
+      [rejected_message, later_message],
+      endpoint.received_messages,
+    )
+
+  def test_step_reraises_the_first_error_after_attempting_all_arrivals(self):
+    """The first delivery error represents a batch with multiple failures."""
+    ring = make_ring()
+    first_message = Message("cc", "cc", "first rejected request")
+    second_message = Message("home", "home", "second rejected request")
+    cc_endpoint = RejectingEndpoint(first_message, "first error")
+    home_endpoint = RejectingEndpoint(second_message, "second error")
+    ring.connect("cc", cc_endpoint)
+    ring.connect("home", home_endpoint)
     injections = [
-      ring.inject(rejected_message),
-      ring.inject(later_message),
+      ring.inject(first_message),
+      ring.inject(second_message),
     ]
 
-    for attempt_count in (1, 2):
-      with self.subTest(attempt_count=attempt_count):
-        with self.assertRaisesRegex(ValueError, "message rejected"):
-          ring.step()
-        self.assertEqual(injections, ring.in_flight)
-        self.assertEqual(
-          [rejected_message] * attempt_count,
-          endpoint.received_messages,
-        )
+    with self.assertRaisesRegex(ValueError, "first error"):
+      ring.step()
+
+    self.assertEqual(injections, ring.in_flight)
+    self.assertEqual([first_message], cc_endpoint.received_messages)
+    self.assertEqual([second_message], home_endpoint.received_messages)
 
   def test_step_rejects_delivery_to_an_unconnected_target(self):
     """An arrived message remains in flight when its target is disconnected."""
