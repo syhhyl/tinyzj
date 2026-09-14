@@ -32,6 +32,27 @@ class RejectingEndpoint(RecordingEndpoint):
       raise ValueError("message rejected")
 
 
+class InjectingRejectingEndpoint(RejectingEndpoint):
+
+  def __init__(
+    self,
+    ring,
+    trigger_message,
+    injected_message,
+    rejected_message,
+  ):
+    super().__init__(rejected_message)
+    self.ring = ring
+    self.trigger_message = trigger_message
+    self.injected_message = injected_message
+    self.injected = None
+
+  def receive(self, message):
+    super().receive(message)
+    if message is self.trigger_message:
+      self.injected = self.ring.inject(self.injected_message)
+
+
 def connect_recording_endpoints(ring):
   endpoints = {}
   for node in ring.nodes:
@@ -140,27 +161,40 @@ class DeliveryTest(unittest.TestCase):
     self.assertEqual(messages, endpoints["home"].received_messages)
     self.assertEqual([], ring.in_flight)
 
-  def test_step_keeps_an_entire_arrived_batch_after_a_later_delivery_fails(self):
-    """A later delivery error prevents removal of earlier delivered messages."""
+  def test_step_commits_successful_deliveries_before_a_later_failure(self):
+    """Only failed and unattempted arrivals remain after a delivery error."""
     ring = make_ring()
     first_message = Message("home", "home", "first local request")
     rejected_message = Message("home", "home", "rejected local request")
-    endpoint = RejectingEndpoint(rejected_message)
+    unattempted_message = Message("home", "home", "unattempted local request")
+    moving_message = Message("cc", "io", "moving request")
+    injected_message = Message("home", "io", "injected response")
+    endpoint = InjectingRejectingEndpoint(
+      ring,
+      first_message,
+      injected_message,
+      rejected_message,
+    )
     ring.connect("home", endpoint)
-    injections = [
-      ring.inject(first_message),
-      ring.inject(rejected_message),
-    ]
+    first = ring.inject(first_message)
+    rejected = ring.inject(rejected_message)
+    unattempted = ring.inject(unattempted_message)
+    moving = ring.inject(moving_message)
 
-    for delivery_count in (1, 2):
-      with self.subTest(delivery_count=delivery_count):
-        with self.assertRaisesRegex(ValueError, "message rejected"):
-          ring.step()
-        self.assertEqual(injections, ring.in_flight)
-        self.assertEqual(
-          [first_message, rejected_message] * delivery_count,
-          endpoint.received_messages,
-        )
+    with self.assertRaisesRegex(ValueError, "message rejected"):
+      ring.step()
+
+    self.assertNotIn(first, ring.in_flight)
+    self.assertEqual(
+      [rejected, unattempted, moving, endpoint.injected],
+      ring.in_flight,
+    )
+    self.assertEqual(
+      [first_message, rejected_message],
+      endpoint.received_messages,
+    )
+    self.assertEqual("cc", moving.current_node_name)
+    self.assertEqual("home", endpoint.injected.current_node_name)
 
   def test_step_rejects_delivery_to_an_unconnected_target(self):
     """An arrived message remains in flight when its target is disconnected."""

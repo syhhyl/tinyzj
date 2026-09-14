@@ -122,6 +122,7 @@ class Ring:
 
     for injection, receiver in zip(arrived, receivers):
       receiver.receive(injection.message)
+      self.in_flight.remove(injection)
 
     new_injections = [
       injection for injection in self.in_flight if injection not in in_flight
