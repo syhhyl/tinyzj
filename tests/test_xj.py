@@ -11,6 +11,15 @@ def make_ring():
   ])
 
 
+def make_square_ring():
+  return Ring([
+    RingNode("n00", "CC0"),
+    RingNode("n01", "HF"),
+    RingNode("n11", "CC1"),
+    RingNode("n10", "S"),
+  ])
+
+
 class RecordingEndpoint:
 
   def __init__(self):
@@ -42,6 +51,51 @@ class TopologyTest(unittest.TestCase):
       ["io", "cc", "home"],
       [node.name for node in ring.path_from("io", "home")],
     )
+
+  def test_square_ring_neighbors_follow_the_perimeter(self):
+    ring = make_square_ring()
+    expected = {
+      "n00": ("n10", "n01"),
+      "n01": ("n00", "n11"),
+      "n11": ("n01", "n10"),
+      "n10": ("n11", "n00"),
+    }
+
+    for name, neighbor_names in expected.items():
+      with self.subTest(node=name):
+        self.assertEqual(
+          neighbor_names,
+          tuple(node.name for node in ring.neighbors_of(name)),
+        )
+
+  def test_square_ring_paths_cover_adjacent_diagonal_and_wraparound(self):
+    ring = make_square_ring()
+    expected = {
+      ("n00", "n01"): ["n00", "n01"],
+      ("n01", "n00"): ["n01", "n11", "n10", "n00"],
+      ("n00", "n11"): ["n00", "n01", "n11"],
+      ("n11", "n00"): ["n11", "n10", "n00"],
+      ("n10", "n01"): ["n10", "n00", "n01"],
+      ("n10", "n00"): ["n10", "n00"],
+    }
+
+    for (source, target), path in expected.items():
+      with self.subTest(source=source, target=target):
+        self.assertEqual(
+          path,
+          [node.name for node in ring.path_from(source, target)],
+        )
+
+  def test_square_ring_returns_to_each_start_after_four_forward_hops(self):
+    ring = make_square_ring()
+
+    for start in ("n00", "n01", "n11", "n10"):
+      with self.subTest(start=start):
+        current = start
+        for _ in range(4):
+          _, next_node = ring.neighbors_of(current)
+          current = next_node.name
+        self.assertEqual(start, current)
 
 
 class InjectionTest(unittest.TestCase):
@@ -90,6 +144,14 @@ class TransportTest(unittest.TestCase):
 
     ring.step()
     self.assertEqual("home", injection.current_node_name)
+
+  def test_step_moves_through_all_four_square_ring_nodes(self):
+    ring = make_square_ring()
+    injection = ring.inject(Message("n01", "n00"))
+
+    for node_name in ("n11", "n10", "n00"):
+      ring.step()
+      self.assertEqual(node_name, injection.current_node_name)
 
 
 class DeliveryTest(unittest.TestCase):
