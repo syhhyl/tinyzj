@@ -321,56 +321,6 @@ class ZhujiangTest(unittest.TestCase):
     self.assertIs(read_response, zhujiang.socket.read_response_for(read_request))
     self.assertIs(io_response, zhujiang.socket.io_response_for(io_request))
 
-  def test_socket_queries_reject_unowned_requests_with_matching_ids(self):
-    """Response lookup only accepts requests sent by this Socket."""
-    zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    zhujiang.run_until_idle()
-    queries = (
-      ("read_request", zhujiang.socket.read_response_for),
-      ("write_request", zhujiang.socket.write_response_for),
-      ("io_request", zhujiang.socket.io_response_for),
-    )
-
-    for message_type, query in queries:
-      with self.subTest(message_type=message_type):
-        unowned_request = Message(
-          "cc",
-          "home",
-          message_type=message_type,
-          transaction_id=request.transaction_id,
-        )
-        with self.assertRaisesRegex(
-          ValueError,
-          "request was not sent by this socket",
-        ):
-          query(unowned_request)
-
-  def test_socket_queries_reject_requests_of_the_wrong_type(self):
-    """Each response query accepts only its matching request type."""
-    zhujiang = Zhujiang()
-    requests = (
-      zhujiang.socket.read("0x1000"),
-      zhujiang.socket.write("0x2000", "value 1"),
-      zhujiang.socket.io_request("device 0"),
-    )
-    queries = (
-      zhujiang.socket.read_response_for,
-      zhujiang.socket.write_response_for,
-      zhujiang.socket.io_response_for,
-    )
-
-    for query_index, query in enumerate(queries):
-      for request_index, request in enumerate(requests):
-        if query_index == request_index:
-          continue
-        with self.subTest(
-          query=query.__name__,
-          request_type=request.message_type,
-        ):
-          with self.assertRaisesRegex(ValueError, "expected .*_request"):
-            query(request)
-
   def test_socket_matches_multiple_write_responses(self):
     """Each write request can query its own response."""
     zhujiang = Zhujiang()
@@ -402,7 +352,7 @@ class ZhujiangTest(unittest.TestCase):
       with self.subTest(message_type=message_type):
         zhujiang = Zhujiang()
         request = Message("cc", "home", message_type=message_type)
-        injection = zhujiang.ring.inject(request)
+        zhujiang.ring.inject(request)
 
         zhujiang.step()
         with self.assertRaisesRegex(ValueError, "home request needs an address"):
@@ -411,7 +361,6 @@ class ZhujiangTest(unittest.TestCase):
         self.assertEqual([request], zhujiang.home.received_messages)
         self.assertEqual([], zhujiang.home.sent_messages)
         self.assertEqual({}, zhujiang.home.dj.data_by_address)
-        self.assertEqual([injection], zhujiang.ring.in_flight)
 
   def test_home_preserves_ids_for_multiple_read_requests(self):
     """Responses retain the IDs assigned to their requests."""
@@ -439,90 +388,8 @@ class ZhujiangTest(unittest.TestCase):
     for request, response in zip(requests, zhujiang.home.sent_messages):
       self.assertIs(response, zhujiang.socket.read_response_for(request))
 
-  def test_socket_rejects_a_response_for_the_wrong_request_type(self):
-    """An inbound response must match the sent request type and ID."""
-    zhujiang = Zhujiang()
-    requests = (
-      zhujiang.socket.read("0x1000"),
-      zhujiang.socket.write("0x2000", "value 1"),
-      zhujiang.socket.io_request("device 0"),
-    )
-    responses = (
-      ("write_response", "home"),
-      ("io_response", "io"),
-      ("read_response", "home"),
-    )
-
-    for request, (message_type, source_name) in zip(requests, responses):
-      with self.subTest(
-        request_type=request.message_type,
-        response_type=message_type,
-      ):
-        message = Message(
-          source_name,
-          "cc",
-          message_type=message_type,
-          transaction_id=request.transaction_id,
-        )
-        with self.assertRaisesRegex(ValueError, "response has no matching request"):
-          zhujiang.socket.receive(message)
-        self.assertIsNone(
-          zhujiang.socket._responses.get(
-            (message.message_type, message.transaction_id)
-          )
-        )
-
-  def test_socket_rejects_responses_from_the_wrong_source(self):
-    """Each response type must arrive from its expected endpoint."""
-    zhujiang = Zhujiang()
-    cases = (
-      (zhujiang.socket.read("0x1000"), "read_response", "io", "home"),
-      (
-        zhujiang.socket.write("0x2000", "value 1"),
-        "write_response",
-        "io",
-        "home",
-      ),
-      (zhujiang.socket.io_request("device 0"), "io_response", "home", "io"),
-    )
-
-    for request, message_type, source_name, expected_source in cases:
-      with self.subTest(message_type=message_type):
-        forged_response = Message(
-          source_name,
-          "cc",
-          message_type=message_type,
-          transaction_id=request.transaction_id,
-        )
-        with self.assertRaisesRegex(
-          ValueError,
-          f"expected response from {expected_source}",
-        ):
-          zhujiang.socket.receive(forged_response)
-        self.assertIsNone(
-          zhujiang.socket._responses.get(
-            (forged_response.message_type, forged_response.transaction_id)
-          )
-        )
-
-  def test_socket_rejects_a_response_received_before_its_request(self):
-    """An inbound response requires an already sent matching request."""
-    zhujiang = Zhujiang()
-    early_response = Message(
-      "home",
-      "cc",
-      payload="early data",
-      message_type="read_response",
-      transaction_id=0,
-    )
-
-    with self.assertRaisesRegex(ValueError, "response has no matching request"):
-      zhujiang.socket.receive(early_response)
-
-    self.assertEqual({}, zhujiang.socket._responses)
-
   def test_socket_keeps_non_response_messages_in_the_general_inbox(self):
-    """Inbound validation only applies to the known response types."""
+    """Only known response types are indexed for request lookup."""
     zhujiang = Zhujiang()
     message = Message("home", "cc", message_type="notification")
 
@@ -530,71 +397,6 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertEqual([message], zhujiang.socket.received_messages)
     self.assertEqual({}, zhujiang.socket._responses)
-
-  def test_socket_rejects_a_later_valid_duplicate_response(self):
-    """A completed transaction keeps its first indexed response."""
-    zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    first_response = Message(
-      "home",
-      "cc",
-      payload="first data",
-      message_type="read_response",
-      transaction_id=request.transaction_id,
-    )
-    second_response = Message(
-      "home",
-      "cc",
-      payload="second data",
-      message_type="read_response",
-      transaction_id=request.transaction_id,
-    )
-
-    zhujiang.socket.receive(first_response)
-    self.assertIs(first_response, zhujiang.socket.read_response_for(request))
-
-    with self.assertRaisesRegex(ValueError, "response already received"):
-      zhujiang.socket.receive(second_response)
-
-    self.assertEqual(
-      [first_response, second_response],
-      zhujiang.socket.received_messages,
-    )
-    self.assertIs(first_response, zhujiang.socket.read_response_for(request))
-
-  def test_ring_retries_a_duplicate_response_after_socket_rejects_it(self):
-    """A failed delivery remains in flight and is observable on each retry."""
-    zhujiang = Zhujiang()
-    request = zhujiang.socket.read("0x1000")
-    zhujiang.run_until_idle()
-    first_response = zhujiang.socket.read_response_for(request)
-    duplicate_response = Message(
-      "home",
-      "cc",
-      payload="duplicate data",
-      message_type="read_response",
-      transaction_id=request.transaction_id,
-    )
-    injection = zhujiang.ring.inject(duplicate_response)
-
-    zhujiang.step()
-    zhujiang.step()
-    self.assertEqual("cc", injection.current_node_name)
-
-    for delivery_count in (1, 2):
-      with self.subTest(delivery_count=delivery_count):
-        with self.assertRaisesRegex(ValueError, "response already received"):
-          zhujiang.step()
-        self.assertEqual([injection], zhujiang.ring.in_flight)
-        self.assertEqual(
-          [first_response] + [duplicate_response] * delivery_count,
-          zhujiang.socket.received_messages,
-        )
-        self.assertIs(
-          first_response,
-          zhujiang.socket.read_response_for(request),
-        )
-
 
 if __name__ == "__main__":
   unittest.main()

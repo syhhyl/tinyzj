@@ -84,47 +84,26 @@ class Socket(Endpoint):
     return request
 
   def read_response_for(self, request):
-    return self._response_for("read_request", "read_response", request)
+    return self._response_for("read_response", request)
 
   def io_response_for(self, request):
-    return self._response_for("io_request", "io_response", request)
+    return self._response_for("io_response", request)
 
   def write_response_for(self, request):
-    return self._response_for("write_request", "write_response", request)
+    return self._response_for("write_response", request)
 
-  def _response_for(self, request_type, response_type, request):
-    if request not in self.sent_messages:
-      raise ValueError("request was not sent by this socket")
-    if request.message_type != request_type:
-      raise ValueError(f"expected {request_type}")
+  def _response_for(self, response_type, request):
     return self._responses.get((response_type, request.transaction_id))
 
   def receive(self, message):
     super().receive(message)
-    response_requirements = {
-      "read_response": ("read_request", "home"),
-      "write_response": ("write_request", "home"),
-      "io_response": ("io_request", "io"),
-    }
-    if message.message_type not in response_requirements:
-      return
-
-    request_type, source_name = response_requirements[message.message_type]
-    matching_requests = [
-      request
-      for request in self.sent_messages
-      if request.message_type == request_type
-      and request.transaction_id == message.transaction_id
-    ]
-    if not matching_requests:
-      raise ValueError("response has no matching request")
-    if message.source_name != source_name:
-      raise ValueError(f"expected response from {source_name}")
-
-    key = (message.message_type, message.transaction_id)
-    if key in self._responses:
-      raise ValueError("response already received")
-    self._responses[key] = message
+    if message.message_type in (
+      "read_response",
+      "io_response",
+      "write_response",
+    ):
+      key = (message.message_type, message.transaction_id)
+      self._responses[key] = message
 
 
 class HomeWrapper(Endpoint):
