@@ -107,31 +107,21 @@ class Ring:
       if injection.current_node_name == injection.message.target_name
     ]
     moving = [injection for injection in in_flight if injection not in arrived]
-    first_error = None
+    receivers = []
     for injection in arrived:
       receiver = self.connections[injection.current_node_name]
       if receiver is None:
-        delivery_error = ValueError(
+        raise ValueError(
           f"ring node is not connected: {injection.current_node_name}"
         )
-      elif not callable(getattr(receiver, "receive", None)):
-        delivery_error = TypeError(
+      if not callable(getattr(receiver, "receive", None)):
+        raise TypeError(
           f"ring node cannot receive messages: {injection.current_node_name}"
         )
-      else:
-        try:
-          receiver.receive(injection.message)
-        except Exception as error:
-          delivery_error = error
-        else:
-          self.in_flight.remove(injection)
-          continue
+      receivers.append(receiver)
 
-      if first_error is None:
-        first_error = delivery_error
-
-    if first_error is not None:
-      raise first_error
+    for injection, receiver in zip(arrived, receivers):
+      receiver.receive(injection.message)
 
     new_injections = [
       injection for injection in self.in_flight if injection not in in_flight
