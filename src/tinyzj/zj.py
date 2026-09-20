@@ -1,3 +1,4 @@
+from .chi import Channel, DatOpcode, ReqOpcode
 from .dj import DongJiang
 from .xj import Message, Ring, RingNode
 
@@ -58,7 +59,11 @@ class Socket(Endpoint):
   def read(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    return self._send_request("read_request", address=address)
+    return self._send_request(
+      address=address,
+      channel=Channel.REQ,
+      opcode=ReqOpcode.READ_NO_SNP,
+    )
 
   def write(self, address, data):
     if address is None:
@@ -69,19 +74,30 @@ class Socket(Endpoint):
       address=address,
     )
 
-  def _send_request(self, message_type, payload=None, address=None):
+  def _send_request(
+    self,
+    message_type="message",
+    payload=None,
+    address=None,
+    channel=None,
+    opcode=None,
+  ):
     request = Message(
       self.node_name,
       self.home_name,
       payload=payload,
       address=address,
       message_type=message_type,
+      channel=channel,
+      opcode=opcode,
     )
     self.ring.inject(request)
     return request
 
   def read_response_for(self, request):
-    return self._response_for("read_response", request)
+    return self._responses.get(
+      (Channel.DAT, DatOpcode.COMP_DATA, request.transaction_id)
+    )
 
   def write_response_for(self, request):
     return self._response_for("write_response", request)
@@ -91,10 +107,13 @@ class Socket(Endpoint):
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type in (
-      "read_response",
-      "write_response",
+    if (
+      message.channel == Channel.DAT
+      and message.opcode == DatOpcode.COMP_DATA
     ):
+      key = (message.channel, message.opcode, message.transaction_id)
+      self._responses[key] = message
+    elif message.message_type == "write_response":
       key = (message.message_type, message.transaction_id)
       self._responses[key] = message
 
@@ -110,7 +129,23 @@ class HomeWrapper(Endpoint):
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type in ("read_request", "write_request"):
+    if (
+      message.channel == Channel.REQ
+      and message.opcode == ReqOpcode.READ_NO_SNP
+    ):
+      if message.address is None:
+        raise ValueError("home request needs an address")
+      self.pending_requests[message.transaction_id] = message
+      storage_request = Message(
+        self.node_name,
+        self.storage_name,
+        address=message.address,
+        transaction_id=message.transaction_id,
+        channel=Channel.ERQ,
+        opcode=ReqOpcode.READ_NO_SNP,
+      )
+      self.ring.inject(storage_request)
+    elif message.message_type == "write_request":
       if message.address is None:
         raise ValueError("home request needs an address")
       self.pending_requests[message.transaction_id] = message
@@ -119,14 +154,27 @@ class HomeWrapper(Endpoint):
         self.storage_name,
         payload=message.payload,
         address=message.address,
-        message_type=f"storage_{message.message_type}",
+        message_type="storage_write_request",
         transaction_id=message.transaction_id,
       )
       self.ring.inject(storage_request)
-    elif message.message_type in (
-      "storage_read_response",
-      "storage_write_response",
+    elif (
+      message.channel == Channel.DAT
+      and message.opcode == DatOpcode.COMP_DATA
     ):
+      request = self.pending_requests.pop(message.transaction_id)
+      response = Message(
+        self.node_name,
+        request.source_name,
+        payload=message.payload,
+        address=message.address,
+        transaction_id=message.transaction_id,
+        data_present=message.data_present,
+        channel=Channel.DAT,
+        opcode=DatOpcode.COMP_DATA,
+      )
+      self.ring.inject(response)
+    elif message.message_type == "storage_write_response":
       request = self.pending_requests.pop(message.transaction_id)
       response_type = message.message_type.removeprefix("storage_")
       response = Message(
@@ -151,16 +199,20 @@ class StorageWrapper(Endpoint):
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type == "storage_read_request":
+    if (
+      message.channel == Channel.ERQ
+      and message.opcode == ReqOpcode.READ_NO_SNP
+    ):
       payload, data_present = self.dj.read(message.address)
       response = Message(
         self.node_name,
         message.source_name,
         payload=payload,
         address=message.address,
-        message_type="storage_read_response",
         transaction_id=message.transaction_id,
         data_present=data_present,
+        channel=Channel.DAT,
+        opcode=DatOpcode.COMP_DATA,
       )
       self.ring.inject(response)
     elif message.message_type == "storage_write_request":

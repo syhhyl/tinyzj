@@ -1,5 +1,6 @@
 import unittest
 
+from tinyzj.chi import Channel, DatOpcode, ReqOpcode
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
 
@@ -31,7 +32,8 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertEqual("n00", cc0_request.source_name)
     self.assertEqual("n01", cc0_request.target_name)
-    self.assertEqual("read_request", cc0_request.message_type)
+    self.assertEqual(Channel.REQ, cc0_request.channel)
+    self.assertEqual(ReqOpcode.READ_NO_SNP, cc0_request.opcode)
     self.assertEqual("n11", cc1_request.source_name)
     self.assertEqual("n01", cc1_request.target_name)
     self.assertEqual("write_request", cc1_request.message_type)
@@ -55,13 +57,24 @@ class ZhujiangTest(unittest.TestCase):
         self.assertFalse(response.data_present)
         self.assertEqual(request.transaction_id, response.transaction_id)
         self.assertEqual(
-          ["read_request", "storage_read_response"],
-          [message.message_type for message in zhujiang.hf.received_messages],
+          [
+            (Channel.REQ, ReqOpcode.READ_NO_SNP),
+            (Channel.DAT, DatOpcode.COMP_DATA),
+          ],
+          [
+            (message.channel, message.opcode)
+            for message in zhujiang.hf.received_messages
+          ],
         )
         self.assertEqual(
-          ["storage_read_request"],
-          [message.message_type for message in zhujiang.s.received_messages],
+          [(Channel.ERQ, ReqOpcode.READ_NO_SNP)],
+          [
+            (message.channel, message.opcode)
+            for message in zhujiang.s.received_messages
+          ],
         )
+        self.assertEqual(Channel.DAT, response.channel)
+        self.assertEqual(DatOpcode.COMP_DATA, response.opcode)
         self.assertEqual({}, zhujiang.hf.pending_requests)
 
   def test_cc0_write_is_visible_to_cc1_read(self):
@@ -124,8 +137,14 @@ class ZhujiangTest(unittest.TestCase):
       zhujiang.hf.received_messages[:2],
     )
     self.assertEqual(
-      ["storage_write_request", "storage_read_request"],
-      [message.message_type for message in zhujiang.s.received_messages],
+      [
+        ("storage_write_request", None, None),
+        ("message", Channel.ERQ, ReqOpcode.READ_NO_SNP),
+      ],
+      [
+        (message.message_type, message.channel, message.opcode)
+        for message in zhujiang.s.received_messages
+      ],
     )
     self.assertEqual(
       "value 1",
@@ -134,7 +153,12 @@ class ZhujiangTest(unittest.TestCase):
 
   def test_s_ignores_non_storage_requests(self):
     zhujiang = Zhujiang()
-    request = Message("n00", "n10", message_type="read_request")
+    request = Message(
+      "n00",
+      "n10",
+      channel=Channel.REQ,
+      opcode=ReqOpcode.READ_NO_SNP,
+    )
     zhujiang.ring.inject(request)
 
     zhujiang.run_until_idle()
@@ -144,7 +168,7 @@ class ZhujiangTest(unittest.TestCase):
 
   def test_hf_ignores_unsupported_requests(self):
     zhujiang = Zhujiang()
-    request = Message("n00", "n01", message_type="other_request")
+    request = Message("n00", "n01", channel=Channel.REQ, opcode="other")
     zhujiang.ring.inject(request)
 
     zhujiang.run_until_idle()
@@ -167,10 +191,22 @@ class ZhujiangTest(unittest.TestCase):
         self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_hf_rejects_a_direct_request_without_an_address(self):
-    for message_type in ("read_request", "write_request"):
-      with self.subTest(message_type=message_type):
+    requests = (
+      Message(
+        "n00",
+        "n01",
+        channel=Channel.REQ,
+        opcode=ReqOpcode.READ_NO_SNP,
+      ),
+      Message("n00", "n01", message_type="write_request"),
+    )
+    for request in requests:
+      with self.subTest(
+        message_type=request.message_type,
+        channel=request.channel,
+        opcode=request.opcode,
+      ):
         zhujiang = Zhujiang()
-        request = Message("n00", "n01", message_type=message_type)
         zhujiang.ring.inject(request)
 
         zhujiang.step()
