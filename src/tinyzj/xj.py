@@ -90,14 +90,17 @@ class Ring:
   def path_from(self, source_name, target_name):
     index = self._node_index(source_name)
     target_index = self._node_index(target_name)
-    
+
+    forward_distance = (target_index - index) % len(self.nodes)
+    backward_distance = (index - target_index) % len(self.nodes)
+    direction = 1 if forward_distance <= backward_distance else -1
     path = []
-    
+
     while True:
       path.append(self.nodes[index])
       if index == target_index:
         return path
-      index = (index + 1) % len(self.nodes)
+      index = (index + direction) % len(self.nodes)
 
   def step(self):
     in_flight = list(self.in_flight)
@@ -129,10 +132,11 @@ class Ring:
     self.in_flight = moving + new_injections
 
     for injection in moving:
-      if injection.current_node_name != injection.message.target_name:
-        current_index = self._node_index(injection.current_node_name)
-        next_index = (current_index + 1) % len(self.nodes)
-        injection.current_node_name = self.nodes[next_index].name
+      path = self.path_from(
+        injection.current_node_name,
+        injection.message.target_name,
+      )
+      injection.current_node_name = path[1].name
     
   
   def _node_index(self, node_name):

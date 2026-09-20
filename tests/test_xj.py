@@ -39,8 +39,7 @@ def connect_recording_endpoints(ring):
 
 
 class TopologyTest(unittest.TestCase):
-  def test_path_wraps_around(self):
-    """Path wraps around."""
+  def test_three_node_path_uses_the_nearest_neighbor(self):
     ring = make_ring()
 
     previous, following = ring.neighbors_of("cc")
@@ -48,7 +47,7 @@ class TopologyTest(unittest.TestCase):
     self.assertEqual("io", previous.name)
     self.assertEqual("home", following.name)
     self.assertEqual(
-      ["io", "cc", "home"],
+      ["io", "home"],
       [node.name for node in ring.path_from("io", "home")],
     )
 
@@ -72,7 +71,7 @@ class TopologyTest(unittest.TestCase):
     ring = make_square_ring()
     expected = {
       ("n00", "n01"): ["n00", "n01"],
-      ("n01", "n00"): ["n01", "n11", "n10", "n00"],
+      ("n01", "n00"): ["n01", "n00"],
       ("n00", "n11"): ["n00", "n01", "n11"],
       ("n11", "n00"): ["n11", "n10", "n00"],
       ("n10", "n01"): ["n10", "n00", "n01"],
@@ -124,34 +123,21 @@ class InjectionTest(unittest.TestCase):
 
 class TransportTest(unittest.TestCase):
   def test_step_moves_message_one_hop_at_a_time(self):
-    """Each step advances a message by one forward ring hop."""
-    ring = make_ring()
-    injection = ring.inject(Message("cc", "io", "read request"))
+    ring = make_square_ring()
+    injection = ring.inject(Message("n00", "n11"))
 
     ring.step()
-    self.assertEqual("home", injection.current_node_name)
+    self.assertEqual("n01", injection.current_node_name)
 
     ring.step()
-    self.assertEqual("io", injection.current_node_name)
+    self.assertEqual("n11", injection.current_node_name)
 
-  def test_step_wraps_around_to_target(self):
-    """Transport wraps around once to reach its target."""
-    ring = make_ring()
-    injection = ring.inject(Message("io", "home", "write request"))
-
-    ring.step()
-    self.assertEqual("cc", injection.current_node_name)
-
-    ring.step()
-    self.assertEqual("home", injection.current_node_name)
-
-  def test_step_moves_through_all_four_square_ring_nodes(self):
+  def test_step_uses_the_backward_neighbor_when_it_is_closer(self):
     ring = make_square_ring()
     injection = ring.inject(Message("n01", "n00"))
 
-    for node_name in ("n11", "n10", "n00"):
-      ring.step()
-      self.assertEqual(node_name, injection.current_node_name)
+    ring.step()
+    self.assertEqual("n00", injection.current_node_name)
 
 
 class DeliveryTest(unittest.TestCase):
@@ -162,7 +148,6 @@ class DeliveryTest(unittest.TestCase):
     message = Message("cc", "io", "read request")
     injection = ring.inject(message)
 
-    ring.step()
     ring.step()
 
     self.assertEqual("io", injection.current_node_name)

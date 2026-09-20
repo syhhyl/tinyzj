@@ -35,9 +35,6 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("home", zhujiang.ring.in_flight[0].current_node_name)
 
     zhujiang.step()
-    self.assertEqual("io", zhujiang.ring.in_flight[0].current_node_name)
-
-    zhujiang.step()
     self.assertEqual("cc", zhujiang.ring.in_flight[0].current_node_name)
 
     zhujiang.step()
@@ -52,7 +49,7 @@ class ZhujiangTest(unittest.TestCase):
 
     steps = zhujiang.run_until_idle()
 
-    self.assertEqual(5, steps)
+    self.assertEqual(4, steps)
     self.assertIsNotNone(zhujiang.socket.read_response_for(request))
     self.assertEqual([], zhujiang.ring.in_flight)
 
@@ -68,7 +65,7 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.socket.read("0x1000")
 
     with self.assertRaisesRegex(RuntimeError, "system did not become idle"):
-      zhujiang.run_until_idle(max_steps=4)
+      zhujiang.run_until_idle(max_steps=3)
 
   def test_run_until_idle_rejects_a_negative_step_limit(self):
     """A step limit cannot be negative."""
@@ -112,7 +109,7 @@ class ZhujiangTest(unittest.TestCase):
 
     steps = zhujiang.run_until_idle()
 
-    self.assertEqual(5, steps)
+    self.assertEqual(4, steps)
     self.assertEqual([request], zhujiang.io_wrapper.received_messages)
     self.assertEqual(1, len(zhujiang.io_wrapper.sent_messages))
     response = zhujiang.io_wrapper.sent_messages[0]
@@ -282,7 +279,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("value 1", read_response.payload)
     self.assertTrue(read_response.data_present)
     self.assertEqual(
-      ["write_response", "read_response", "io_response"],
+      ["write_response", "io_response", "read_response"],
       [message.message_type for message in zhujiang.socket.received_messages],
     )
 
@@ -293,7 +290,6 @@ class ZhujiangTest(unittest.TestCase):
 
     zhujiang.step()
     io_request = zhujiang.socket.io_request("device 0")
-    zhujiang.step()
     zhujiang.step()
     zhujiang.step()
 
