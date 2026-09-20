@@ -87,11 +87,8 @@ class ZhujiangTest(unittest.TestCase):
 
     zhujiang.run_until_idle()
 
-    self.assertEqual(
-      ["storage_write_request", "write_response"],
-      [message.message_type for message in zhujiang.hf.sent_messages],
-    )
-    storage_request, response = zhujiang.hf.sent_messages
+    storage_request = zhujiang.s.received_messages[0]
+    response = zhujiang.cc0.received_messages[0]
     self.assertEqual("n01", storage_request.source_name)
     self.assertEqual("n10", storage_request.target_name)
     self.assertEqual(request.transaction_id, storage_request.transaction_id)
@@ -143,7 +140,7 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.run_until_idle()
 
     self.assertEqual([request], zhujiang.s.received_messages)
-    self.assertEqual([], zhujiang.s.sent_messages)
+    self.assertEqual([], zhujiang.hf.received_messages)
 
   def test_hf_ignores_unsupported_requests(self):
     zhujiang = Zhujiang()
@@ -153,7 +150,8 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.run_until_idle()
 
     self.assertEqual([request], zhujiang.hf.received_messages)
-    self.assertEqual([], zhujiang.hf.sent_messages)
+    self.assertEqual([], zhujiang.s.received_messages)
+    self.assertEqual([], zhujiang.cc0.received_messages)
 
   def test_ccs_reject_requests_without_an_address(self):
     for cc_name in ("cc0", "cc1"):
@@ -166,7 +164,6 @@ class ZhujiangTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "write request needs an address"):
           cc.write(None, "value 1")
 
-        self.assertEqual([], cc.sent_messages)
         self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_hf_rejects_a_direct_request_without_an_address(self):
@@ -181,8 +178,8 @@ class ZhujiangTest(unittest.TestCase):
           zhujiang.step()
 
         self.assertEqual([request], zhujiang.hf.received_messages)
-        self.assertEqual([], zhujiang.hf.sent_messages)
         self.assertEqual({}, zhujiang.hf.pending_requests)
+        self.assertEqual([], zhujiang.s.received_messages)
         self.assertEqual({}, zhujiang.s.dj.data_by_address)
 
   def test_run_until_idle_enforces_its_step_limit(self):

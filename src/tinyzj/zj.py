@@ -53,7 +53,6 @@ class Socket(Endpoint):
     self.ring = ring
     self.node_name = node_name
     self.home_name = home_name
-    self.sent_messages = []
     self._responses = {}
 
   def read(self, address):
@@ -78,7 +77,6 @@ class Socket(Endpoint):
       address=address,
       message_type=message_type,
     )
-    self.sent_messages.append(request)
     self.ring.inject(request)
     return request
 
@@ -108,7 +106,6 @@ class HomeWrapper(Endpoint):
     self.ring = ring
     self.node_name = node_name
     self.storage_name = storage_name
-    self.sent_messages = []
     self.pending_requests = {}
 
   def receive(self, message):
@@ -125,7 +122,6 @@ class HomeWrapper(Endpoint):
         message_type=f"storage_{message.message_type}",
         transaction_id=message.transaction_id,
       )
-      self.sent_messages.append(storage_request)
       self.ring.inject(storage_request)
     elif message.message_type in (
       "storage_read_response",
@@ -142,7 +138,6 @@ class HomeWrapper(Endpoint):
         transaction_id=message.transaction_id,
         data_present=message.data_present,
       )
-      self.sent_messages.append(response)
       self.ring.inject(response)
     
 
@@ -152,7 +147,6 @@ class StorageWrapper(Endpoint):
     super().__init__()
     self.ring = ring
     self.node_name = node_name
-    self.sent_messages = []
     self.dj = DongJiang()
 
   def receive(self, message):
@@ -168,7 +162,6 @@ class StorageWrapper(Endpoint):
         transaction_id=message.transaction_id,
         data_present=data_present,
       )
-      self.sent_messages.append(response)
       self.ring.inject(response)
     elif message.message_type == "storage_write_request":
       self.dj.write(message.address, message.payload)
@@ -180,5 +173,4 @@ class StorageWrapper(Endpoint):
         message_type="storage_write_response",
         transaction_id=message.transaction_id,
       )
-      self.sent_messages.append(response)
       self.ring.inject(response)
