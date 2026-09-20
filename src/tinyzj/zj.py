@@ -4,21 +4,22 @@ from .xj import Message, Ring, RingNode
 class Zhujiang:
   
   def __init__(self):
-    nodes = []
-    
-    nodes.append(RingNode("cc", "CPU cluster"))
-    nodes.append(RingNode("home", "coherent home"))
-    nodes.append(RingNode("io", "memory and IO"))
-    
-    self.ring = Ring(nodes)
-    
-    self.socket = Socket(self.ring)
-    self.home = HomeWrapper(self.ring)
-    self.io_wrapper = IoWrapper(self.ring)
+    self.ring = Ring([
+      RingNode("n00", "CC0"),
+      RingNode("n01", "HF"),
+      RingNode("n11", "CC1"),
+      RingNode("n10", "S"),
+    ])
 
-    self.ring.connect("cc", self.socket)
-    self.ring.connect("home", self.home)
-    self.ring.connect("io", self.io_wrapper)
+    self.cc0 = Socket(self.ring, "n00", "n01")
+    self.hf = HomeWrapper(self.ring, "n01", "n10")
+    self.cc1 = Socket(self.ring, "n11", "n01")
+    self.s = StorageWrapper(self.ring, "n10")
+
+    self.ring.connect("n00", self.cc0)
+    self.ring.connect("n01", self.hf)
+    self.ring.connect("n11", self.cc1)
+    self.ring.connect("n10", self.s)
 
   def step(self):
     self.ring.step()
@@ -47,34 +48,32 @@ class Endpoint:
 
 class Socket(Endpoint):
 
-  def __init__(self, ring):
+  def __init__(self, ring, node_name, home_name):
     super().__init__()
     self.ring = ring
+    self.node_name = node_name
+    self.home_name = home_name
     self.sent_messages = []
     self._responses = {}
 
   def read(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    return self._send_request("home", "read_request", address=address)
-
-  def io_request(self, payload=None):
-    return self._send_request("io", "io_request", payload)
+    return self._send_request("read_request", address=address)
 
   def write(self, address, data):
     if address is None:
       raise ValueError("write request needs an address")
     return self._send_request(
-      "home",
       "write_request",
       payload=data,
       address=address,
     )
 
-  def _send_request(self, target_name, message_type, payload=None, address=None):
+  def _send_request(self, message_type, payload=None, address=None):
     request = Message(
-      "cc",
-      target_name,
+      self.node_name,
+      self.home_name,
       payload=payload,
       address=address,
       message_type=message_type,
@@ -86,9 +85,6 @@ class Socket(Endpoint):
   def read_response_for(self, request):
     return self._response_for("read_response", request)
 
-  def io_response_for(self, request):
-    return self._response_for("io_response", request)
-
   def write_response_for(self, request):
     return self._response_for("write_response", request)
 
@@ -99,7 +95,6 @@ class Socket(Endpoint):
     super().receive(message)
     if message.message_type in (
       "read_response",
-      "io_response",
       "write_response",
     ):
       key = (message.message_type, message.transaction_id)
@@ -108,56 +103,81 @@ class Socket(Endpoint):
 
 class HomeWrapper(Endpoint):
   
-  def __init__(self, ring):
+  def __init__(self, ring, node_name, storage_name):
     super().__init__()
     self.ring = ring
+    self.node_name = node_name
+    self.storage_name = storage_name
     self.sent_messages = []
-    self.dj = DongJiang()
+    self.pending_requests = {}
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type == "read_request":
-      payload, data_present = self.dj.read(message.address)
-      response = Message(
-        "home",
-        message.source_name,
-        payload=payload,
+    if message.message_type in ("read_request", "write_request"):
+      if message.address is None:
+        raise ValueError("home request needs an address")
+      self.pending_requests[message.transaction_id] = message
+      storage_request = Message(
+        self.node_name,
+        self.storage_name,
+        payload=message.payload,
         address=message.address,
-        message_type="read_response",
+        message_type=f"storage_{message.message_type}",
         transaction_id=message.transaction_id,
-        data_present=data_present,
       )
-      self.sent_messages.append(response)
-      self.ring.inject(response)
-    elif message.message_type == "write_request":
-      self.dj.write(message.address, message.payload)
+      self.sent_messages.append(storage_request)
+      self.ring.inject(storage_request)
+    elif message.message_type in (
+      "storage_read_response",
+      "storage_write_response",
+    ):
+      request = self.pending_requests.pop(message.transaction_id)
+      response_type = message.message_type.removeprefix("storage_")
       response = Message(
-        "home",
-        message.source_name,
-        payload="write complete",
+        self.node_name,
+        request.source_name,
+        payload=message.payload,
         address=message.address,
-        message_type="write_response",
+        message_type=response_type,
         transaction_id=message.transaction_id,
+        data_present=message.data_present,
       )
       self.sent_messages.append(response)
       self.ring.inject(response)
     
 
-class IoWrapper(Endpoint):
+class StorageWrapper(Endpoint):
 
-  def __init__(self, ring):
+  def __init__(self, ring, node_name):
     super().__init__()
     self.ring = ring
+    self.node_name = node_name
     self.sent_messages = []
+    self.dj = DongJiang()
 
   def receive(self, message):
     super().receive(message)
-    if message.message_type == "io_request":
+    if message.message_type == "storage_read_request":
+      payload, data_present = self.dj.read(message.address)
       response = Message(
-        "io",
+        self.node_name,
         message.source_name,
-        payload="io data",
-        message_type="io_response",
+        payload=payload,
+        address=message.address,
+        message_type="storage_read_response",
+        transaction_id=message.transaction_id,
+        data_present=data_present,
+      )
+      self.sent_messages.append(response)
+      self.ring.inject(response)
+    elif message.message_type == "storage_write_request":
+      self.dj.write(message.address, message.payload)
+      response = Message(
+        self.node_name,
+        message.source_name,
+        payload="write complete",
+        address=message.address,
+        message_type="storage_write_response",
         transaction_id=message.transaction_id,
       )
       self.sent_messages.append(response)
