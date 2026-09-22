@@ -1,6 +1,6 @@
 import unittest
 
-from tinyzj.chi import Channel, DatOpcode, ReqOpcode
+from tinyzj.chi import Channel, DatOpcode, ReqOpcode, RspOpcode
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
 
@@ -36,7 +36,9 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(ReqOpcode.READ_NO_SNP, cc0_request.opcode)
     self.assertEqual("n11", cc1_request.source_name)
     self.assertEqual("n01", cc1_request.target_name)
-    self.assertEqual("write_request", cc1_request.message_type)
+    self.assertEqual(Channel.REQ, cc1_request.channel)
+    self.assertEqual(ReqOpcode.WRITE_NO_SNP_FULL, cc1_request.opcode)
+    self.assertIsNone(cc1_request.payload)
     self.assertEqual([0, 1], [
       cc0_request.transaction_id,
       cc1_request.transaction_id,
@@ -81,35 +83,105 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang = Zhujiang()
     write_request = zhujiang.cc0.write("0x1000", "value 1")
 
-    zhujiang.run_until_idle()
+    steps = zhujiang.run_until_idle()
     read_request = zhujiang.cc1.read("0x1000")
     zhujiang.run_until_idle()
 
-    self.assertEqual(
-      "write complete",
-      zhujiang.cc0.write_response_for(write_request).payload,
-    )
+    write_response = zhujiang.cc0.write_response_for(write_request)
+    self.assertEqual(20, steps)
+    self.assertEqual(Channel.RSP, write_response.channel)
+    self.assertEqual(RspOpcode.COMP, write_response.opcode)
     read_response = zhujiang.cc1.read_response_for(read_request)
     self.assertEqual("value 1", read_response.payload)
     self.assertTrue(read_response.data_present)
     self.assertEqual("value 1", zhujiang.s.dj.data_by_address["0x1000"])
 
-  def test_hf_forwards_requests_and_responses_without_storing_data(self):
+  def test_write_separates_address_request_from_data(self):
     zhujiang = Zhujiang()
     request = zhujiang.cc0.write("0x1000", "value 1")
 
     zhujiang.run_until_idle()
 
     storage_request = zhujiang.s.received_messages[0]
-    response = zhujiang.cc0.received_messages[0]
+    storage_data = zhujiang.s.received_messages[1]
+    response = zhujiang.cc0.write_response_for(request)
+    self.assertIsNone(request.payload)
+    self.assertEqual("0x1000", request.address)
+    self.assertEqual(
+      [
+        (Channel.REQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
+        (Channel.RSP, RspOpcode.DBID_RESP),
+        (Channel.RSP, RspOpcode.COMP),
+      ],
+      [
+        (message.channel, message.opcode)
+        for message in zhujiang.hf.received_messages
+      ],
+    )
+    self.assertEqual(
+      [
+        (Channel.ERQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
+      ],
+      [
+        (message.channel, message.opcode)
+        for message in zhujiang.s.received_messages
+      ],
+    )
+    self.assertEqual(
+      [
+        (Channel.RSP, RspOpcode.DBID_RESP),
+        (Channel.RSP, RspOpcode.COMP),
+      ],
+      [
+        (message.channel, message.opcode)
+        for message in zhujiang.cc0.received_messages
+      ],
+    )
     self.assertEqual("n01", storage_request.source_name)
     self.assertEqual("n10", storage_request.target_name)
+    self.assertEqual("0x1000", storage_request.address)
+    self.assertIsNone(storage_request.payload)
+    self.assertIsNone(storage_data.address)
+    self.assertEqual("value 1", storage_data.payload)
     self.assertEqual(request.transaction_id, storage_request.transaction_id)
     self.assertEqual("n01", response.source_name)
     self.assertEqual("n00", response.target_name)
     self.assertEqual(request.transaction_id, response.transaction_id)
     self.assertFalse(hasattr(zhujiang.hf, "dj"))
+    self.assertEqual({}, zhujiang.cc0.pending_write_data)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_write_data)
+    self.assertEqual({}, zhujiang.s.pending_writes)
     self.assertEqual("value 1", zhujiang.s.dj.data_by_address["0x1000"])
+
+  def test_concurrent_writes_keep_data_with_their_transactions(self):
+    zhujiang = Zhujiang()
+    cc0_request = zhujiang.cc0.write("0x1000", "value 1")
+    cc1_request = zhujiang.cc1.write("0x2000", "value 2")
+
+    zhujiang.run_until_idle()
+
+    self.assertNotEqual(
+      cc0_request.transaction_id,
+      cc1_request.transaction_id,
+    )
+    self.assertEqual(
+      {
+        "0x1000": "value 1",
+        "0x2000": "value 2",
+      },
+      zhujiang.s.dj.data_by_address,
+    )
+    self.assertEqual(
+      RspOpcode.COMP,
+      zhujiang.cc0.write_response_for(cc0_request).opcode,
+    )
+    self.assertEqual(
+      RspOpcode.COMP,
+      zhujiang.cc1.write_response_for(cc1_request).opcode,
+    )
 
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()
@@ -124,32 +196,6 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([cc1_response], zhujiang.cc1.received_messages)
     self.assertIsNone(zhujiang.cc0.read_response_for(cc1_request))
     self.assertIsNone(zhujiang.cc1.read_response_for(cc0_request))
-
-  def test_same_address_batch_is_processed_in_injection_order(self):
-    zhujiang = Zhujiang()
-    write_request = zhujiang.cc0.write("0x1000", "value 1")
-    read_request = zhujiang.cc1.read("0x1000")
-
-    zhujiang.run_until_idle()
-
-    self.assertEqual(
-      [write_request, read_request],
-      zhujiang.hf.received_messages[:2],
-    )
-    self.assertEqual(
-      [
-        ("storage_write_request", None, None),
-        ("message", Channel.ERQ, ReqOpcode.READ_NO_SNP),
-      ],
-      [
-        (message.message_type, message.channel, message.opcode)
-        for message in zhujiang.s.received_messages
-      ],
-    )
-    self.assertEqual(
-      "value 1",
-      zhujiang.cc1.read_response_for(read_request).payload,
-    )
 
   def test_s_ignores_non_storage_requests(self):
     zhujiang = Zhujiang()
@@ -198,7 +244,12 @@ class ZhujiangTest(unittest.TestCase):
         channel=Channel.REQ,
         opcode=ReqOpcode.READ_NO_SNP,
       ),
-      Message("n00", "n01", message_type="write_request"),
+      Message(
+        "n00",
+        "n01",
+        channel=Channel.REQ,
+        opcode=ReqOpcode.WRITE_NO_SNP_FULL,
+      ),
     )
     for request in requests:
       with self.subTest(

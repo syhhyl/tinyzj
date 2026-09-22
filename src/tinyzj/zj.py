@@ -1,4 +1,4 @@
-from .chi import Channel, DatOpcode, ReqOpcode
+from .chi import Channel, DatOpcode, ReqOpcode, RspOpcode
 from .dj import DongJiang
 from .xj import Message, Ring, RingNode
 
@@ -55,6 +55,7 @@ class Socket(Endpoint):
     self.node_name = node_name
     self.home_name = home_name
     self._responses = {}
+    self.pending_write_data = {}
 
   def read(self, address):
     if address is None:
@@ -68,26 +69,24 @@ class Socket(Endpoint):
   def write(self, address, data):
     if address is None:
       raise ValueError("write request needs an address")
-    return self._send_request(
-      "write_request",
-      payload=data,
+    request = self._send_request(
       address=address,
+      channel=Channel.REQ,
+      opcode=ReqOpcode.WRITE_NO_SNP_FULL,
     )
+    self.pending_write_data[request.transaction_id] = data
+    return request
 
   def _send_request(
     self,
-    message_type="message",
-    payload=None,
-    address=None,
-    channel=None,
-    opcode=None,
+    address,
+    channel,
+    opcode,
   ):
     request = Message(
       self.node_name,
       self.home_name,
-      payload=payload,
       address=address,
-      message_type=message_type,
       channel=channel,
       opcode=opcode,
     )
@@ -100,10 +99,9 @@ class Socket(Endpoint):
     )
 
   def write_response_for(self, request):
-    return self._response_for("write_response", request)
-
-  def _response_for(self, response_type, request):
-    return self._responses.get((response_type, request.transaction_id))
+    return self._responses.get(
+      (Channel.RSP, RspOpcode.COMP, request.transaction_id)
+    )
 
   def receive(self, message):
     super().receive(message)
@@ -113,8 +111,26 @@ class Socket(Endpoint):
     ):
       key = (message.channel, message.opcode, message.transaction_id)
       self._responses[key] = message
-    elif message.message_type == "write_response":
-      key = (message.message_type, message.transaction_id)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.DBID_RESP
+    ):
+      data = self.pending_write_data[message.transaction_id]
+      write_data = Message(
+        self.node_name,
+        message.source_name,
+        payload=data,
+        transaction_id=message.transaction_id,
+        channel=Channel.DAT,
+        opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
+      )
+      self.ring.inject(write_data)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.COMP
+    ):
+      self.pending_write_data.pop(message.transaction_id)
+      key = (message.channel, message.opcode, message.transaction_id)
       self._responses[key] = message
 
 
@@ -126,6 +142,7 @@ class HomeWrapper(Endpoint):
     self.node_name = node_name
     self.storage_name = storage_name
     self.pending_requests = {}
+    self.pending_write_data = {}
 
   def receive(self, message):
     super().receive(message)
@@ -145,19 +162,21 @@ class HomeWrapper(Endpoint):
         opcode=ReqOpcode.READ_NO_SNP,
       )
       self.ring.inject(storage_request)
-    elif message.message_type == "write_request":
+    elif (
+      message.channel == Channel.REQ
+      and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
+    ):
       if message.address is None:
         raise ValueError("home request needs an address")
       self.pending_requests[message.transaction_id] = message
-      storage_request = Message(
+      dbid_response = Message(
         self.node_name,
-        self.storage_name,
-        payload=message.payload,
-        address=message.address,
-        message_type="storage_write_request",
+        message.source_name,
         transaction_id=message.transaction_id,
+        channel=Channel.RSP,
+        opcode=RspOpcode.DBID_RESP,
       )
-      self.ring.inject(storage_request)
+      self.ring.inject(dbid_response)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
@@ -174,17 +193,46 @@ class HomeWrapper(Endpoint):
         opcode=DatOpcode.COMP_DATA,
       )
       self.ring.inject(response)
-    elif message.message_type == "storage_write_response":
+    elif (
+      message.channel == Channel.DAT
+      and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
+    ):
+      request = self.pending_requests[message.transaction_id]
+      self.pending_write_data[message.transaction_id] = message.payload
+      storage_request = Message(
+        self.node_name,
+        self.storage_name,
+        address=request.address,
+        transaction_id=message.transaction_id,
+        channel=Channel.ERQ,
+        opcode=ReqOpcode.WRITE_NO_SNP_FULL,
+      )
+      self.ring.inject(storage_request)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.DBID_RESP
+    ):
+      write_data = Message(
+        self.node_name,
+        message.source_name,
+        payload=self.pending_write_data[message.transaction_id],
+        transaction_id=message.transaction_id,
+        channel=Channel.DAT,
+        opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
+      )
+      self.ring.inject(write_data)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.COMP
+    ):
       request = self.pending_requests.pop(message.transaction_id)
-      response_type = message.message_type.removeprefix("storage_")
+      self.pending_write_data.pop(message.transaction_id)
       response = Message(
         self.node_name,
         request.source_name,
-        payload=message.payload,
-        address=message.address,
-        message_type=response_type,
         transaction_id=message.transaction_id,
-        data_present=message.data_present,
+        channel=Channel.RSP,
+        opcode=RspOpcode.COMP,
       )
       self.ring.inject(response)
     
@@ -196,6 +244,7 @@ class StorageWrapper(Endpoint):
     self.ring = ring
     self.node_name = node_name
     self.dj = DongJiang()
+    self.pending_writes = {}
 
   def receive(self, message):
     super().receive(message)
@@ -215,14 +264,30 @@ class StorageWrapper(Endpoint):
         opcode=DatOpcode.COMP_DATA,
       )
       self.ring.inject(response)
-    elif message.message_type == "storage_write_request":
-      self.dj.write(message.address, message.payload)
+    elif (
+      message.channel == Channel.ERQ
+      and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
+    ):
+      self.pending_writes[message.transaction_id] = message
+      dbid_response = Message(
+        self.node_name,
+        message.source_name,
+        transaction_id=message.transaction_id,
+        channel=Channel.RSP,
+        opcode=RspOpcode.DBID_RESP,
+      )
+      self.ring.inject(dbid_response)
+    elif (
+      message.channel == Channel.DAT
+      and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
+    ):
+      request = self.pending_writes.pop(message.transaction_id)
+      self.dj.write(request.address, message.payload)
       response = Message(
         self.node_name,
         message.source_name,
-        payload="write complete",
-        address=message.address,
-        message_type="storage_write_response",
         transaction_id=message.transaction_id,
+        channel=Channel.RSP,
+        opcode=RspOpcode.COMP,
       )
       self.ring.inject(response)
