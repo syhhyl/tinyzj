@@ -107,8 +107,25 @@ class InjectionTest(unittest.TestCase):
 
     self.assertIs(injection.message, message)
     self.assertEqual("cc", injection.current_node_name)
-    self.assertEqual(0, message.transaction_id)
+    self.assertIsNone(message.transaction_id)
     self.assertEqual([injection], ring.in_flight)
+
+  def test_ring_preserves_present_and_missing_transaction_ids(self):
+    ring = make_ring()
+    present = Message("cc", "io", transaction_id=7)
+    missing = Message("cc", "io")
+    present_injection = ring.inject(present)
+    missing_injection = ring.inject(missing)
+    endpoints = connect_recording_endpoints(ring)
+
+    ring.step()
+    ring.step()
+    ring.step()
+
+    self.assertEqual(7, present.transaction_id)
+    self.assertIsNone(missing.transaction_id)
+    self.assertEqual([present, missing], endpoints["io"].received_messages)
+    self.assertEqual([], ring.in_flight)
 
   def test_rejects_unknown_endpoint(self):
     """Reject unknown endpoint."""

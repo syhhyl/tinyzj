@@ -19,6 +19,7 @@ class Message:
     data_present=None,
     channel=None,
     opcode=None,
+    dbid=None,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -31,6 +32,7 @@ class Message:
     self.address = address
     self.message_type = message_type
     self.transaction_id = transaction_id
+    self.dbid = dbid
     self.data_present = data_present
     self.channel = channel
     self.opcode = opcode
@@ -57,7 +59,6 @@ class Ring:
       self.connections[node.name] = None
     
     self.in_flight = []
-    self.next_transaction_id = 0
     
     
   def connect(self, node_name, module):
@@ -83,10 +84,6 @@ class Ring:
     self._node_index(message.source_name)
     self._node_index(message.target_name)
 
-    if message.transaction_id is None:
-      message.transaction_id = self.next_transaction_id
-      self.next_transaction_id += 1
-    
     injection = Injection(message)
     self.in_flight.append(injection)
     return injection

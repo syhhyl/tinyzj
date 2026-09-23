@@ -56,6 +56,7 @@ class Socket(Endpoint):
     self.home_name = home_name
     self._responses = {}
     self.pending_write_data = {}
+    self.next_transaction_id = 0
 
   def read(self, address):
     if address is None:
@@ -89,7 +90,9 @@ class Socket(Endpoint):
       address=address,
       channel=channel,
       opcode=opcode,
+      transaction_id=self.next_transaction_id,
     )
+    self.next_transaction_id += 1
     self.ring.inject(request)
     return request
 
@@ -120,7 +123,7 @@ class Socket(Endpoint):
         self.node_name,
         message.source_name,
         payload=data,
-        transaction_id=message.transaction_id,
+        transaction_id=message.dbid,
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
       )
@@ -143,6 +146,7 @@ class HomeWrapper(Endpoint):
     self.storage_name = storage_name
     self.pending_requests = {}
     self.pending_write_data = {}
+    self.next_home_id = 0
 
   def receive(self, message):
     super().receive(message)
@@ -152,12 +156,14 @@ class HomeWrapper(Endpoint):
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
-      self.pending_requests[message.transaction_id] = message
+      home_id = self.next_home_id
+      self.next_home_id += 1
+      self.pending_requests[home_id] = message
       storage_request = Message(
         self.node_name,
         self.storage_name,
         address=message.address,
-        transaction_id=message.transaction_id,
+        transaction_id=home_id,
         channel=Channel.ERQ,
         opcode=ReqOpcode.READ_NO_SNP,
       )
@@ -168,11 +174,14 @@ class HomeWrapper(Endpoint):
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
-      self.pending_requests[message.transaction_id] = message
+      home_id = self.next_home_id
+      self.next_home_id += 1
+      self.pending_requests[home_id] = message
       dbid_response = Message(
         self.node_name,
         message.source_name,
         transaction_id=message.transaction_id,
+        dbid=home_id,
         channel=Channel.RSP,
         opcode=RspOpcode.DBID_RESP,
       )
@@ -187,7 +196,7 @@ class HomeWrapper(Endpoint):
         request.source_name,
         payload=message.payload,
         address=message.address,
-        transaction_id=message.transaction_id,
+        transaction_id=request.transaction_id,
         data_present=message.data_present,
         channel=Channel.DAT,
         opcode=DatOpcode.COMP_DATA,
@@ -216,7 +225,7 @@ class HomeWrapper(Endpoint):
         self.node_name,
         message.source_name,
         payload=self.pending_write_data[message.transaction_id],
-        transaction_id=message.transaction_id,
+        transaction_id=message.dbid,
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
       )
@@ -230,7 +239,7 @@ class HomeWrapper(Endpoint):
       response = Message(
         self.node_name,
         request.source_name,
-        transaction_id=message.transaction_id,
+        transaction_id=request.transaction_id,
         channel=Channel.RSP,
         opcode=RspOpcode.COMP,
       )
@@ -245,6 +254,7 @@ class StorageWrapper(Endpoint):
     self.node_name = node_name
     self.dj = DongJiang()
     self.pending_writes = {}
+    self.next_dbid = 0
 
   def receive(self, message):
     super().receive(message)
@@ -268,11 +278,14 @@ class StorageWrapper(Endpoint):
       message.channel == Channel.ERQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
     ):
-      self.pending_writes[message.transaction_id] = message
+      dbid = self.next_dbid
+      self.next_dbid += 1
+      self.pending_writes[dbid] = message
       dbid_response = Message(
         self.node_name,
         message.source_name,
         transaction_id=message.transaction_id,
+        dbid=dbid,
         channel=Channel.RSP,
         opcode=RspOpcode.DBID_RESP,
       )
@@ -286,7 +299,7 @@ class StorageWrapper(Endpoint):
       response = Message(
         self.node_name,
         message.source_name,
-        transaction_id=message.transaction_id,
+        transaction_id=request.transaction_id,
         channel=Channel.RSP,
         opcode=RspOpcode.COMP,
       )
