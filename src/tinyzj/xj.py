@@ -1,3 +1,6 @@
+from .chi import Channel
+
+
 class RingNode:
   
   def __init__(self, name, role):
@@ -42,6 +45,7 @@ class Injection:
   def __init__(self, message):
     self.message = message
     self.current_node_name = message.source_name
+    self.direction = None
 
 
 
@@ -81,10 +85,17 @@ class Ring:
     raise ValueError(f"unknown ring node: {node_name}")
     
   def inject(self, message):
+    if message.channel not in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ):
+      raise ValueError("message needs a known channel")
     self._node_index(message.source_name)
     self._node_index(message.target_name)
 
     injection = Injection(message)
+    if message.source_name != message.target_name:
+      path = self.path_from(message.source_name, message.target_name)
+      source_index = self._node_index(message.source_name)
+      next_index = self._node_index(path[1].name)
+      injection.direction = 1 if next_index == (source_index + 1) % len(self.nodes) else -1
     self.in_flight.append(injection)
     return injection
 
@@ -132,12 +143,19 @@ class Ring:
     ]
     self.in_flight = moving + new_injections
 
+    occupied_links = set()
     for injection in moving:
-      path = self.path_from(
+      current_index = self._node_index(injection.current_node_name)
+      next_index = (current_index + injection.direction) % len(self.nodes)
+      link = (
         injection.current_node_name,
-        injection.message.target_name,
+        self.nodes[next_index].name,
+        injection.message.channel,
       )
-      injection.current_node_name = path[1].name
+      if link in occupied_links:
+        continue
+      occupied_links.add(link)
+      injection.current_node_name = self.nodes[next_index].name
     
   
   def _node_index(self, node_name):
