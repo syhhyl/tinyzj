@@ -397,6 +397,26 @@ class HomeWrapper(Endpoint):
     self.dirty_data = {}
     self.downstream_completions = {}
     self.downstream_data_sent = set()
+    self.evictions = {}
+    self.eviction_results = {}
+
+  def evict(self, address):
+    if address not in self.dirty_data:
+      raise ValueError("home eviction requires home-owned dirty data")
+    if self.directory.get(address) or self.address_busy.get(address):
+      raise ValueError("home eviction requires an unshared idle line")
+    limits = [n for n in (self.max_transactions, self.id_capacity) if n is not None]
+    if limits and len(self.pending_requests) + sum(self.credit_reservations.values()) >= min(limits):
+      raise ValueError("home eviction requires a free transaction slot")
+    request = Message(self.node_name, self.storage_name, address=address,
+                      channel=Channel.REQ, opcode=ReqOpcode.WRITE_NO_SNP_FULL)
+    home_id = allocate_id(self, "next_home_id", self.pending_requests)
+    self.pending_requests[home_id] = request
+    self.evictions[home_id] = request
+    self.address_busy[address] = {home_id}
+    self.pending_write_data[home_id] = self.dirty_data[address]
+    self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
+    return request
 
   def _finish_downstream_write(self, txn_id):
     if txn_id not in self.downstream_data_sent or txn_id not in self.downstream_completions:
@@ -413,6 +433,12 @@ class HomeWrapper(Endpoint):
       busy.discard(home_id)
       if not busy:
         self.address_busy.pop(request.address, None)
+    if home_id in self.evictions:
+      self.evictions.pop(home_id)
+      self.eviction_results[request] = completion
+      if completion.resp_err == RespErr.OK:
+        self.dirty_data.pop(request.address)
+      return
     self.ring.inject(Message(
       self.node_name,
       request.source_name,

@@ -1,10 +1,41 @@
 import unittest
 
-from tinyzj.chi import DatOpcode, Resp
+from tinyzj.chi import DatOpcode, Resp, RespErr
 from tinyzj.zj import Zhujiang
 
 
 class DirtyDataTest(unittest.TestCase):
+
+  def test_home_eviction_retains_dirty_data_until_success(self):
+    for fail in (False, True):
+      with self.subTest(fail=fail):
+        system = Zhujiang(buffer_capacity=2, id_capacity=1)
+        system.s.dj.write("A", "old")
+        system.cc0.read_unique("A")
+        system.run_until_idle()
+        system.cc0.store_cached("A", "latest")
+        system.cc0.writeback("A")
+        system.run_until_idle()
+        if fail:
+          system.s.error_addresses.add("A")
+        eviction = system.hf.evict("A")
+        self.assertEqual("latest", system.hf.dirty_data["A"])
+        with self.assertRaises(ValueError):
+          system.hf.evict("A")
+        system.run_until_idle()
+        self.assertEqual(RespErr.NDERR if fail else RespErr.OK,
+                         system.hf.eviction_results[eviction].resp_err)
+        self.assertEqual("old" if fail else "latest", system.s.dj.data_by_address["A"])
+        self.assertEqual({"A": "latest"} if fail else {}, system.hf.dirty_data)
+        self.assertFalse(system.hf.evictions)
+        self.assertFalse(system.hf.pending_requests)
+        self.assertFalse(system.hf.address_busy)
+        if fail:
+          system.s.error_addresses.clear()
+          system.hf.evict("A")
+          system.run_until_idle()
+          self.assertEqual("latest", system.s.dj.data_by_address["A"])
+          self.assertFalse(system.hf.dirty_data)
 
   def test_local_read_after_copyback_waits_and_refills(self):
     system = Zhujiang(buffer_capacity=2, retry_enabled=True)
