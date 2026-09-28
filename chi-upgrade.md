@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- B3b：已支持 RN/HF 接收 CompDBIDResp，同时处理 DBID 与完成语义，写数据仍只发送一次；OK/NDERR 与有界 ID 回收测试通过（87 测试）。正式依据现已固定为 IHI0050 G（Mar 2024），B2.3 pp.62–64；官方 PDF https://documentation-service.arm.com/static/69e73291379d3e7aaa33ab54 。默认 HF/S 仍产生分离响应，合并响应接收能力通过端点事件注入验证。
+
 - B3a 已完成分离写响应重排：RN 与 HF 下游请求者均分别保存 Comp 和数据发送状态，只有收到 Comp 且单拍写数据已提交可靠源队列后，才对上层发布完成并释放映射/TxnID。Comp 提前到达不会丢掉 payload 或导致尚未收到 DBID 的事务提前复用。OK/NDERR 原样保存并在最终完成时传播。
 - B3a 验收为端点级注入两种合法事件顺序（Comp→DBIDResp、DBIDResp→Comp），分别检查 RN 与 HF 数据、ID、资源持有/清理及响应历史；默认 SN 仍维持写数据接收后产生 Comp，未改变内存写入顺序。86 个测试通过。后续 B3b 补 CompDBIDResp 合并响应；多 beat 完成条件留 E 阶段。
 

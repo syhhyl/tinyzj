@@ -269,7 +269,7 @@ class Socket(Endpoint):
       )
     elif (
       message.channel == Channel.RSP
-      and message.opcode == RspOpcode.DBID_RESP
+      and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
     ):
       data = self.pending_write_data[message.transaction_id]
       write_data = Message(
@@ -282,6 +282,8 @@ class Socket(Endpoint):
       )
       self.ring.inject(write_data)
       self.write_data_sent.add(message.transaction_id)
+      if message.opcode == RspOpcode.COMP_DBID_RESP:
+        self.write_completions[message.transaction_id] = message
       request = self.active_requests[message.transaction_id]
       self.request_states[request] = "await_comp"
       self._finish_write(message.transaction_id)
@@ -533,7 +535,7 @@ class HomeWrapper(Endpoint):
       self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
     elif (
       message.channel == Channel.RSP
-      and message.opcode == RspOpcode.DBID_RESP
+      and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
     ):
       write_data = Message(
         self.node_name,
@@ -545,6 +547,8 @@ class HomeWrapper(Endpoint):
       )
       self.ring.inject(write_data)
       self.downstream_data_sent.add(message.transaction_id)
+      if message.opcode == RspOpcode.COMP_DBID_RESP:
+        self.downstream_completions[message.transaction_id] = message
       self._finish_downstream_write(message.transaction_id)
     elif (
       message.channel == Channel.RSP

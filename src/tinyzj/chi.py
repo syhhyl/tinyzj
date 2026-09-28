@@ -24,6 +24,7 @@ class RspOpcode:
 
   COMP = "Comp"
   DBID_RESP = "DBIDResp"
+  COMP_DBID_RESP = "CompDBIDResp"
   COMP_ACK = "CompAck"
   SNP_RESP = "SnpResp"
 

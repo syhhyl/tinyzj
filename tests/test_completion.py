@@ -7,6 +7,38 @@ from tinyzj.zj import Socket, Zhujiang
 
 class WriteCompletionTest(unittest.TestCase):
 
+  def test_combined_response_at_requester_and_home(self):
+    for target in ("rn", "hn"):
+      for error in (RespErr.OK, RespErr.NDERR):
+        with self.subTest(target=target, error=error):
+          system = Zhujiang(id_capacity=1)
+          request = system.cc0.write("A", "value")
+          if target == "hn":
+            for _ in range(100):
+              system.step()
+              if system.hf.downstream_requests:
+                break
+          endpoint = system.cc0 if target == "rn" else system.hf
+          source = "n01" if target == "rn" else "n10"
+          combined = Message(source, endpoint.node_name, transaction_id=0,
+                             dbid=79, channel=Channel.RSP,
+                             opcode=RspOpcode.COMP_DBID_RESP, resp_err=error)
+          endpoint.receive(combined)
+          data = [i.message for i in system.ring.in_flight
+                  if i.message.source_name == endpoint.node_name
+                  and i.message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA]
+          self.assertEqual(1, len(data))
+          self.assertEqual(79, data[0].transaction_id)
+          self.assertEqual("value", data[0].payload)
+          if target == "rn":
+            self.assertIs(combined, endpoint.write_response_for(request))
+            self.assertFalse(endpoint.active_requests)
+          else:
+            response = next(i.message for i in system.ring.in_flight
+                            if i.message.opcode == RspOpcode.COMP)
+            self.assertEqual(error, response.resp_err)
+            self.assertFalse(endpoint.downstream_requests)
+
   def test_home_retains_mapping_until_both_downstream_events(self):
     for comp_first in (False, True):
       for error in (RespErr.OK, RespErr.NDERR):
