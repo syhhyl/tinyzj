@@ -45,6 +45,10 @@
 
 ## 执行记录
 
+- A3b 已完成：`id_capacity` 同时应用于各 RN 的 TxnID 空间。RN 用请求对象保存等待队列及未注入写数据，只有分配到 TxnID 才入环；响应历史按 `(channel, opcode, request对象)` 保存，重复编号不会覆盖旧请求结果。普通读/写在完成响应后释放；一致性读保守地等其 CompAck 从网络交付后释放。`Zhujiang.step()` 在环步进后推进 RN 队列，`run_until_idle()` 同时检查 RN 待处理状态。
+- CompAck 的交付观察是当前 Python 模型的调度机制，不是新增 CHI 返回消息或真实硬件可见确认信号；阶段 B 需对照规范完善 CompAck 标识与 RN 的协议级释放条件。直接驱动 `ring.step()` 不代替系统级 RN 调度，应使用 `Zhujiang.step()`。
+- A3b 验收：容量 1 下跨请求保留历史响应、CompAck 前禁止复用、排队写数据与错误响应不串事务；压力矩阵同时覆盖 ID 容量 1/2/3/无限。82 个测试通过。下一步 B 规范核对及完成状态机。
+
 提交规则：以后每个可验证增量完成后，运行回归并创建本地 Conventional Commit，不自动推送。
 
 - A3a 已完成：`Zhujiang(id_capacity=N)` 限制 HF 四个 ID 空间及 SN DBID，各空间独立循环分配并跳过活跃 ID；HF 按活跃内部事务数保守预留后续资源，仅对 REQ 背压，SN 对写 REQ 检查 DBID 容量。默认 None 保持原行为。容量 1/2/3 的逐步检查覆盖复用、并发、snoop 与错误清理；80 个测试及三个演示通过。RN TxnID 仍单调递增，下一步 A3b。

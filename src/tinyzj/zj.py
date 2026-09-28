@@ -47,7 +47,7 @@ class Zhujiang:
       RingNode("n10", "S"),
     ], buffer_capacity=buffer_capacity)
 
-    self.cc0 = Socket(self.ring, "n00", "n01")
+    self.cc0 = Socket(self.ring, "n00", "n01", id_capacity=id_capacity)
     self.hf = HomeWrapper(
       self.ring,
       "n01",
@@ -55,7 +55,7 @@ class Zhujiang:
       max_transactions=max_transactions,
       id_capacity=id_capacity,
     )
-    self.cc1 = Socket(self.ring, "n11", "n01")
+    self.cc1 = Socket(self.ring, "n11", "n01", id_capacity=id_capacity)
     self.s = StorageWrapper(
       self.ring,
       "n10",
@@ -70,13 +70,15 @@ class Zhujiang:
 
   def step(self):
     self.ring.step()
+    self.cc0.advance_requests()
+    self.cc1.advance_requests()
 
   def run_until_idle(self, max_steps=100):
     if max_steps < 0:
       raise ValueError("max_steps must be non-negative")
 
     steps = 0
-    while self.ring.in_flight:
+    while self.ring.in_flight or self.cc0.has_pending_requests() or self.cc1.has_pending_requests():
       if steps == max_steps:
         raise RuntimeError("system did not become idle")
       self.step()
@@ -95,8 +97,14 @@ class Endpoint:
 
 class Socket(Endpoint):
 
-  def __init__(self, ring, node_name, home_name):
+  def __init__(self, ring, node_name, home_name, id_capacity=None):
     super().__init__()
+    validate_id_capacity(id_capacity)
+    self.id_capacity = id_capacity
+    self.active_requests = {}
+    self.waiting_requests = []
+    self.waiting_write_data = {}
+    self.pending_acks = {}
     self.ring = ring
     self.node_name = node_name
     self.home_name = home_name
@@ -144,7 +152,10 @@ class Socket(Endpoint):
       channel=Channel.REQ,
       opcode=ReqOpcode.WRITE_NO_SNP_FULL,
     )
-    self.pending_write_data[request.transaction_id] = data
+    if request.transaction_id is None:
+      self.waiting_write_data[request] = data
+    else:
+      self.pending_write_data[request.transaction_id] = data
     return request
 
   def _send_request(
@@ -159,20 +170,39 @@ class Socket(Endpoint):
       address=address,
       channel=channel,
       opcode=opcode,
-      transaction_id=self.next_transaction_id,
     )
-    self.next_transaction_id += 1
-    self.ring.inject(request)
+    self.waiting_requests.append(request)
+    self.advance_requests()
     return request
+
+  def has_pending_requests(self):
+    return bool(self.active_requests or self.waiting_requests)
+
+  def advance_requests(self):
+    in_flight = {injection.message for injection in self.ring.in_flight}
+    for txn_id, ack in list(self.pending_acks.items()):
+      if ack not in in_flight:
+        self.pending_acks.pop(txn_id)
+        self.active_requests.pop(txn_id)
+    while self.waiting_requests:
+      if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
+        break
+      request = self.waiting_requests.pop(0)
+      txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
+      request.transaction_id = txn_id
+      self.active_requests[txn_id] = request
+      if request in self.waiting_write_data:
+        self.pending_write_data[txn_id] = self.waiting_write_data.pop(request)
+      self.ring.inject(request)
 
   def read_response_for(self, request):
     return self._responses.get(
-      (Channel.DAT, DatOpcode.COMP_DATA, request.transaction_id)
+      (Channel.DAT, DatOpcode.COMP_DATA, request)
     )
 
   def write_response_for(self, request):
     return self._responses.get(
-      (Channel.RSP, RspOpcode.COMP, request.transaction_id)
+      (Channel.RSP, RspOpcode.COMP, request)
     )
 
   def receive(self, message):
@@ -181,20 +211,23 @@ class Socket(Endpoint):
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
     ):
-      key = (message.channel, message.opcode, message.transaction_id)
+      request = self.active_requests[message.transaction_id]
+      key = (message.channel, message.opcode, request)
       self._responses[key] = message
       if message.resp in (Resp.SC, Resp.UC):
         if message.resp_err == RespErr.OK:
           self.cache[message.address] = (message.resp, message.payload)
-        self.ring.inject(
-          Message(
-            self.node_name,
-            message.source_name,
-            transaction_id=message.transaction_id,
-            channel=Channel.RSP,
-            opcode=RspOpcode.COMP_ACK,
-          )
+        ack = Message(
+          self.node_name,
+          message.source_name,
+          transaction_id=message.transaction_id,
+          channel=Channel.RSP,
+          opcode=RspOpcode.COMP_ACK,
         )
+        self.pending_acks[message.transaction_id] = ack
+        self.ring.inject(ack)
+      else:
+        self.active_requests.pop(message.transaction_id)
     elif (
       message.channel == Channel.SNP
       and message.opcode == SnpOpcode.SNP_SHARED
@@ -244,7 +277,8 @@ class Socket(Endpoint):
       and message.opcode == RspOpcode.COMP
     ):
       self.pending_write_data.pop(message.transaction_id)
-      key = (message.channel, message.opcode, message.transaction_id)
+      request = self.active_requests.pop(message.transaction_id)
+      key = (message.channel, message.opcode, request)
       self._responses[key] = message
 
 

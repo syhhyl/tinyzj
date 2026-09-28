@@ -18,6 +18,9 @@ class StressTest(unittest.TestCase):
     holders = {}
     for cc in (system.cc0, system.cc1):
       self.assertFalse(cc.pending_write_data)
+      self.assertFalse(cc.has_pending_requests())
+      self.assertFalse(cc.pending_acks)
+      self.assertFalse(cc.waiting_write_data)
       for address, (state, value) in cc.cache.items():
         self.assertNotIn(address, system.s.error_addresses)
         self.assertEqual(system.s.dj.read(address)[0], value)
@@ -34,6 +37,7 @@ class StressTest(unittest.TestCase):
           with self.subTest(capacity=capacity, slots=slots, seed=seed):
             rng = random.Random(seed)
             system = Zhujiang(buffer_capacity=capacity, max_transactions=slots,
+                              id_capacity=(1, 2, 3, None)[seed % 4],
                               error_addresses=["E"])
             system.hf.next_home_id = 100
             system.hf.next_downstream_id = 1000
