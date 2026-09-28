@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- G2：系统 idle 现在包含 Home/S 未完成事务、信用预留与收包状态，避免网络空了就误报完成；新增 `check_invariants()` 检查信用守恒、ID→事务映射、地址独占锁、RN 数据生命周期及静止目录/缓存一致。6 个固定种子、600 次扩展混合操作逐步断言并核对独立 bytes scoreboard。修复 failed exclusive read 保留旧 monitor，以及错误 DVM 操作数仍触发 TLB invalidation。130 测试通过。此为当前实现的系统验收，不是 CHI-G 全条目验收；剩余缺口见 `chi-coverage.md`。
+
 - F5：非 snoopable exclusive 使用 ReadNoSnp/WriteNoSnp 的 Excl、LPID（当前 API 单 LPID=0），Home 保存 `(RN, LPID)→地址` monitor；成功写清除同地址 monitor，exclusive store 失败返回 OK 且不写入，成功返回 EXOK。依据 IHI0050 G B6.2.4/B6.3 pp.314–315。覆盖竞争写干扰及两个 monitor 只允许一个 store 成功；snoopable LP/PoC monitor 尚未实现。
 - F6：DVM 行为子集提供 invalidate(page/all) 与 sync；REQ/DBIDResp/NonCopyBackWriteData 后向两个 RN 发送每目标两段 SnpDVMOp，收齐两段后修改教学 TLB 并只回一次 SnpResp，Home 收齐全部响应后 Comp。所有 DVM 用同一内部地址令牌串行化，Sync 因此前序操作全部完成。依据 IHI0050 G B2.3.6 pp.88–89、B2.3.9.8 p.97。126 测试通过。操作参数是 Python 元数据，尚未实现 DVM 地址位编码、VMID/ASID、异常级和指令缓存维护。
 

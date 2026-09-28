@@ -18,13 +18,13 @@
 | Exclusive | Non-snoopable ReadNoSnp/WriteNoSnp Excl，Home monitor、EXOK/OK 与竞争写；`test_exclusive.py` | snoopable LP/PoC monitor、多 LPID API、全部失败路径 |
 | Cache maintenance | CleanInvalid/CleanShared 与对应 snoop，dirty 刷入 S 后完成；`test_maintenance.py` | MakeInvalid、同步完成与持久化扩展 |
 | DVM | 教学 TLB invalidate、双段广播、全部目标响应后完成及串行 Sync；`test_dvm.py` | 位编码、VMID/ASID/异常级、指令缓存操作、完整排序审计 |
-| 系统验证 | 确定性混合压力和 byte-line scoreboard | 完整协议断言、所有必选条目审计 |
+| 系统验证 | 确定性混合压力、byte-line scoreboard、600 次扩展混合操作逐步信用/映射/生命周期断言；`test_acceptance.py` | 完整协议断言、所有必选条目审计 |
 
 ## 后续依赖
 
 1. 统一整数地址、64-byte line key 与 Size 窗口，明确教学字符串地址的独立模式。
-2. 为 Atomic/Exclusive 增加返回数据与写数据提交的联合完成记录；现有 read/write 分支不能直接复用作为完整原子语义。
-3. 在相同地址锁内实现原子读改写及 snoop，加入双 RN 冲突验证。
-4. 补维护/DVM 的拓扑能力配置和事务状态机，再完成规范逐项适用性审计。
+2. 原子返回数据与操作数提交的联合完成已经实现；补子行线上位置和大端字段、全部错误组合审计。
+3. 原子行锁与双 RN 冲突验证已经实现；补 snoopable Exclusive 的 LP/PoC monitor。
+4. 补维护/DVM 的完整编码、拓扑能力配置和排序审计，再完成规范逐项适用性审计。
 
 任何未实现项在验收前保持“未覆盖”，不能仅因当前四节点示例没有使用就标为“不适用”。

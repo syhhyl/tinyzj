@@ -6,6 +6,18 @@ from tinyzj.zj import Zhujiang
 
 class ExclusiveTest(unittest.TestCase):
 
+  def test_failed_exclusive_read_clears_previous_monitor(self):
+    system = Zhujiang(error_addresses={64})
+    system.s.dj.write(0, "old")
+    system.cc0.read_exclusive_no_snp(0)
+    system.run_until_idle()
+    system.cc0.read_exclusive_no_snp(64)
+    system.run_until_idle()
+    request = system.cc0.write_exclusive_no_snp(0, "new")
+    system.run_until_idle()
+    self.assertEqual(RespErr.OK, system.cc0.write_response_for(request).resp_err)
+    self.assertEqual("old", system.s.dj.data_by_address[0])
+
   def test_exclusive_store_success_and_interference(self):
     for interfere in (False, True):
       system = Zhujiang(id_capacity=1, buffer_capacity=2, retry_enabled=True)

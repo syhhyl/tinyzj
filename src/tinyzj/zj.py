@@ -101,12 +101,57 @@ class Zhujiang:
       raise ValueError("max_steps must be non-negative")
 
     steps = 0
-    while self.ring.in_flight or self.cc0.has_pending_requests() or self.cc1.has_pending_requests():
+    while self.has_pending_work():
       if steps == max_steps:
         raise RuntimeError("system did not become idle")
       self.step()
       steps += 1
     return steps
+
+  def has_pending_work(self):
+    return bool(self.ring.in_flight or self.cc0.has_pending_requests() or self.cc1.has_pending_requests()
+                or self.hf.pending_requests or self.hf.credit_waiters or self.hf.credit_reservations
+                or self.s.pending_writes or any(endpoint.data_assembly.pending
+                  for endpoint in (self.cc0, self.cc1, self.hf, self.s)))
+
+  def check_invariants(self):
+    ring = self.ring
+    if ring.buffer_capacity is not None:
+      for key, credit in ring.link_credits.items():
+        node, direction, channel = key
+        occupied = len(ring.ring_buffers[node][(direction, channel)])
+        returning = sum(1 for _, candidate in ring.credit_returns if candidate == key)
+        assert credit >= 0 and credit + occupied + returning == ring.buffer_capacity, key
+    home = self.hf
+    active = set(home.pending_requests)
+    assert set(home.downstream_requests.values()) <= active
+    assert set(home.write_dbids.values()) <= active
+    assert {entry["home_id"] for entry in home.pending_snoops.values()} <= active
+    assert set(home.pending_write_data) <= active
+    assert set(home.pending_write_errors) <= active
+    assert set(home.atomic_results) <= active
+    for address, holders in home.address_busy.items():
+      assert len(holders) == 1
+      assert holders <= active
+      assert all(home.pending_requests[index].address == address for index in holders)
+    for cc in (self.cc0, self.cc1):
+      ids = set(cc.active_requests)
+      assert set(cc.pending_write_data) <= ids
+      assert cc.write_data_sent <= ids
+      assert set(cc.atomic_completions) <= ids
+      assert set(cc.retry_requests) <= ids
+      if cc.id_capacity is not None:
+        assert len(ids) <= cc.id_capacity
+    if not self.has_pending_work():
+      for address, holders in home.directory.items():
+        for node, state in holders.items():
+          cache = ring.connections[node].cache
+          assert address in cache, (node, address)
+          assert cache[address][0] == state or (state == Resp.UC and cache[address][0] == Resp.UD)
+        if any(state == Resp.UC for state in holders.values()):
+          assert len(holders) == 1
+      assert not home.pending_snoops and not home.address_busy
+      assert not home.downstream_requests and not home.write_dbids
 
 
 class Endpoint:
@@ -858,6 +903,14 @@ class HomeWrapper(Endpoint):
       self.pending_write_errors[home_id] = message.resp_err
       request = self.pending_requests[home_id]
       if request.opcode == ReqOpcode.DVM_OP:
+        if message.resp_err != RespErr.OK:
+          self.pending_requests.pop(home_id)
+          self.pending_write_data.pop(home_id)
+          self.pending_write_errors.pop(home_id, None)
+          self.address_busy.pop(request.address)
+          self.send(Message(self.node_name, request.source_name, transaction_id=request.transaction_id,
+                            channel=Channel.RSP, opcode=RspOpcode.COMP, resp_err=RespErr.NDERR))
+          return
         operation, page = message.payload
         snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         targets = {node.name for node in self.ring.nodes if node.role.startswith("CC")}
@@ -915,9 +968,11 @@ class HomeWrapper(Endpoint):
 
   def _complete_read(self, home_id, payload, address, data_present, resp_err):
       request = self.pending_requests[home_id]
-      if request.excl and request.opcode == ReqOpcode.READ_NO_SNP and resp_err == RespErr.OK:
-        self.exclusive_monitors[(request.source_name, request.lpid)] = address
-        resp_err = RespErr.EXOK
+      if request.excl and request.opcode == ReqOpcode.READ_NO_SNP:
+        self.exclusive_monitors.pop((request.source_name, request.lpid), None)
+        if resp_err == RespErr.OK:
+          self.exclusive_monitors[(request.source_name, request.lpid)] = address
+          resp_err = RespErr.EXOK
       if request.opcode in ATOMIC_OPCODES:
         operand_error = self.pending_write_errors.get(home_id, RespErr.OK)
         if resp_err != RespErr.OK or operand_error != RespErr.OK or not isinstance(payload, bytes) or len(payload) != 64:
