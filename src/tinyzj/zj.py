@@ -41,6 +41,7 @@ class Zhujiang:
     error_addresses=None,
     id_capacity=None,
     retry_enabled=False,
+    credit_return_delay=1,
   ):
     validate_id_capacity(id_capacity)
     self.ring = Ring([
@@ -48,7 +49,7 @@ class Zhujiang:
       RingNode("n01", "HF"),
       RingNode("n11", "CC1"),
       RingNode("n10", "S"),
-    ], buffer_capacity=buffer_capacity)
+    ], buffer_capacity=buffer_capacity, credit_return_delay=credit_return_delay)
 
     self.cc0 = Socket(self.ring, "n00", "n01", id_capacity=id_capacity)
     self.hf = HomeWrapper(

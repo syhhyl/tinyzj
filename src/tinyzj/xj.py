@@ -64,12 +64,17 @@ class Injection:
 
 class Ring:
 
-  def __init__(self, nodes, buffer_capacity=None):
+  def __init__(self, nodes, buffer_capacity=None, credit_return_delay=1):
     self.nodes = list(nodes)
     if len(self.nodes) < 3:
       raise ValueError("ring needs at least three nodes")
 
     self.buffer_capacity = buffer_capacity
+    if type(credit_return_delay) is not int or credit_return_delay < 1:
+      raise ValueError("credit_return_delay must be a positive integer")
+    self.credit_return_delay = credit_return_delay
+    self.cycle = 0
+    self.credit_returns = []
     if buffer_capacity is not None:
       if not isinstance(buffer_capacity, int) or buffer_capacity < 2:
         raise ValueError("buffer_capacity must be an integer >= 2")
@@ -91,6 +96,11 @@ class Ring:
     }
 
     self.connections = {}
+    self.link_credits = {
+      (node, direction, channel): buffer_capacity
+      for node, buffers in self.ring_buffers.items()
+      for direction, channel in buffers
+    }
     for node in self.nodes:
       if node.name in self.connections:
         raise ValueError(f"duplicate ring node: {node.name}")
@@ -157,6 +167,11 @@ class Ring:
       index = (index + direction) % len(self.nodes)
 
   def step(self):
+    self.cycle += 1
+    for ready, key in list(self.credit_returns):
+      if ready <= self.cycle:
+        self.link_credits[key] += 1
+        self.credit_returns.remove((ready, key))
     initial = list(self.in_flight)
     buffer_occupancy = {
       (node_name, direction, channel): len(buffer)
@@ -202,6 +217,7 @@ class Ring:
         self.ring_buffers[injection.current_node_name][
           (injection.direction, message.channel)
         ].remove(injection)
+        self._return_credit(injection)
       else:
         self.source_queues[message.source_name][message.channel].remove(
           injection
@@ -231,15 +247,17 @@ class Ring:
       ]
       if (
         self.buffer_capacity is not None
-        and buffer_occupancy[
-          (next_node_name, injection.direction, injection.message.channel)
-        ] >= self.buffer_capacity
+        and (self.link_credits[(next_node_name, injection.direction, injection.message.channel)] < 1
+             or buffer_occupancy[(next_node_name, injection.direction, injection.message.channel)] >= self.buffer_capacity)
       ):
         continue
       occupied_links.add(link)
       self.ring_buffers[injection.current_node_name][
         (injection.direction, injection.message.channel)
       ].remove(injection)
+      self._return_credit(injection)
+      if self.buffer_capacity is not None:
+        self.link_credits[(next_node_name, injection.direction, injection.message.channel)] -= 1
       injection.current_node_name = next_node_name
       buffer.append(injection)
 
@@ -271,10 +289,13 @@ class Ring:
       )
       if (
         self.buffer_capacity is not None
-        and buffer_occupancy[occupancy_key] > self.buffer_capacity - 2
+        and (self.link_credits[occupancy_key] < 2
+             or buffer_occupancy[occupancy_key] > self.buffer_capacity - 2)
       ):
         continue
       occupied_links.add(link)
+      if self.buffer_capacity is not None:
+        self.link_credits[occupancy_key] -= 1
       self.source_queues[current_name][injection.message.channel].remove(injection)
       injection.in_ring = True
       injection.current_node_name = next_node_name
@@ -283,6 +304,11 @@ class Ring:
       ].append(injection)
     
   
+  def _return_credit(self, injection):
+    if self.buffer_capacity is not None:
+      key = (injection.current_node_name, injection.direction, injection.message.channel)
+      self.credit_returns.append((self.cycle + self.credit_return_delay, key))
+
   def _node_index(self, node_name):
     for index, node in enumerate(self.nodes):
       if node.name == node_name:
