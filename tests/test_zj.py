@@ -45,7 +45,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("n11", cc1_request.source_name)
     self.assertEqual("n01", cc1_request.target_name)
     self.assertEqual(Channel.REQ, cc1_request.channel)
-    self.assertEqual(ReqOpcode.WRITE_NO_SNP_FULL, cc1_request.opcode)
+    self.assertEqual(ReqOpcode.WRITE_UNIQUE_FULL, cc1_request.opcode)
     self.assertIsNone(cc1_request.payload)
     self.assertEqual([0, 0], [
       cc0_request.transaction_id,
@@ -186,7 +186,7 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual("0x1000", request.address)
     self.assertEqual(
       [
-        (Channel.REQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.REQ, ReqOpcode.WRITE_UNIQUE_FULL),
         (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
         (Channel.RSP, RspOpcode.DBID_RESP),
         (Channel.RSP, RspOpcode.COMP),
@@ -322,7 +322,7 @@ class ZhujiangTest(unittest.TestCase):
 
     self.assertEqual(
       [
-        (Channel.REQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.REQ, ReqOpcode.WRITE_UNIQUE_FULL),
         (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
         (Channel.RSP, RspOpcode.DBID_RESP),
         (Channel.RSP, RspOpcode.COMP),

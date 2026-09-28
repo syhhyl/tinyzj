@@ -178,8 +178,8 @@ class DashboardTest(unittest.TestCase):
     dashboard = Dashboard()
     dashboard.write("A", "value")
     view = dashboard.render()
-    self.assertLess(view.index("Node CC0"), view.index("REQ · WriteNoSnpFull"))
-    self.assertLess(view.index("REQ · WriteNoSnpFull"), view.index("╰"))
+    self.assertLess(view.index("Node CC0"), view.index("REQ · WriteUniqueFull"))
+    self.assertLess(view.index("REQ · WriteUniqueFull"), view.index("╰"))
     self.assertEqual(0, dashboard.steps)
     self.assertFalse(dashboard.system.ring.in_flight[0].in_ring)
 

@@ -155,12 +155,21 @@ class Socket(Endpoint):
     )
 
   def write(self, address, data):
+    return self.write_unique(address, data)
+
+  def write_no_snp(self, address, data):
+    return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
+
+  def write_unique(self, address, data):
+    return self._write(address, data, ReqOpcode.WRITE_UNIQUE_FULL)
+
+  def _write(self, address, data, opcode):
     if address is None:
       raise ValueError("write request needs an address")
     request = self._send_request(
       address=address,
       channel=Channel.REQ,
-      opcode=ReqOpcode.WRITE_NO_SNP_FULL,
+      opcode=opcode,
     )
     if request.transaction_id is None:
       self.waiting_write_data[request] = data
@@ -202,7 +211,7 @@ class Socket(Endpoint):
         retry.pcrd_type = credit_key[1]
         self.ring.inject(retry)
         self.retry_requests.pop(txn_id)
-        self.request_states[request] = "await_dbid" if request.opcode == ReqOpcode.WRITE_NO_SNP_FULL else "await_data"
+        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL) else "await_data"
     while self.waiting_requests:
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
@@ -210,7 +219,7 @@ class Socket(Endpoint):
       txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
       request.transaction_id = txn_id
       self.active_requests[txn_id] = request
-      self.request_states[request] = "await_dbid" if request.opcode == ReqOpcode.WRITE_NO_SNP_FULL else "await_data"
+      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL) else "await_data"
       if request in self.waiting_write_data:
         self.pending_write_data[txn_id] = self.waiting_write_data.pop(request)
       self.ring.inject(request)
@@ -488,14 +497,14 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
+      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
       home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
-      holders = set(self.directory.get(message.address, {}))
+      holders = set(self.directory.get(message.address, {})) if message.opcode == ReqOpcode.WRITE_UNIQUE_FULL else set()
       if holders:
         snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
