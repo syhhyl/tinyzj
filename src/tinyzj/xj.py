@@ -27,6 +27,8 @@ class Message:
     resp=None,
     exp_comp_ack=False,
     home_nid=None,
+    allow_retry=True,
+    pcrd_type=0,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -47,6 +49,8 @@ class Message:
     self.resp = resp
     self.exp_comp_ack = exp_comp_ack
     self.home_nid = home_nid
+    self.allow_retry = allow_retry
+    self.pcrd_type = pcrd_type
 
 class Injection:
 

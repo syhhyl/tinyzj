@@ -17,11 +17,15 @@ class StressTest(unittest.TestCase):
     self.assertFalse(system.hf.write_dbids)
     self.assertFalse(system.hf.downstream_completions)
     self.assertFalse(system.hf.downstream_data_sent)
+    self.assertFalse(system.hf.credit_waiters)
+    self.assertFalse(system.hf.credit_reservations)
     holders = {}
     for cc in (system.cc0, system.cc1):
       self.assertFalse(cc.pending_write_data)
       self.assertFalse(cc.write_completions)
       self.assertFalse(cc.write_data_sent)
+      self.assertFalse(cc.retry_requests)
+      self.assertFalse(cc.protocol_credits)
       self.assertFalse(cc.has_pending_requests())
       self.assertTrue(all(state == "complete" for state in cc.request_states.values()))
       self.assertFalse(cc.waiting_write_data)
@@ -42,6 +46,7 @@ class StressTest(unittest.TestCase):
             rng = random.Random(seed)
             system = Zhujiang(buffer_capacity=capacity, max_transactions=slots,
                               id_capacity=(1, 2, 3, None)[seed % 4],
+                              retry_enabled=bool(seed % 2),
                               error_addresses=["E"])
             system.hf.next_home_id = 100
             system.hf.next_downstream_id = 1000

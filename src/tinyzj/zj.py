@@ -1,3 +1,5 @@
+from copy import copy
+
 from .chi import (
   Channel,
   DatOpcode,
@@ -38,6 +40,7 @@ class Zhujiang:
     max_transactions=None,
     error_addresses=None,
     id_capacity=None,
+    retry_enabled=False,
   ):
     validate_id_capacity(id_capacity)
     self.ring = Ring([
@@ -54,6 +57,7 @@ class Zhujiang:
       "n10",
       max_transactions=max_transactions,
       id_capacity=id_capacity,
+      retry_enabled=retry_enabled,
     )
     self.cc1 = Socket(self.ring, "n11", "n01", id_capacity=id_capacity)
     self.s = StorageWrapper(
@@ -72,6 +76,7 @@ class Zhujiang:
     self.ring.step()
     self.cc0.advance_requests()
     self.cc1.advance_requests()
+    self.hf.advance_credits()
 
   def run_until_idle(self, max_steps=100):
     if max_steps < 0:
@@ -107,6 +112,8 @@ class Socket(Endpoint):
     self.request_states = {}
     self.write_completions = {}
     self.write_data_sent = set()
+    self.retry_requests = {}
+    self.protocol_credits = {}
     self.ring = ring
     self.node_name = node_name
     self.home_name = home_name
@@ -183,6 +190,18 @@ class Socket(Endpoint):
     return bool(self.active_requests or self.waiting_requests)
 
   def advance_requests(self):
+    for txn_id, credit_key in list(self.retry_requests.items()):
+      if self.protocol_credits.get(credit_key, 0):
+        self.protocol_credits[credit_key] -= 1
+        if not self.protocol_credits[credit_key]:
+          del self.protocol_credits[credit_key]
+        request = self.active_requests[txn_id]
+        retry = copy(request)
+        retry.allow_retry = False
+        retry.pcrd_type = credit_key[1]
+        self.ring.inject(retry)
+        self.retry_requests.pop(txn_id)
+        self.request_states[request] = "await_dbid" if request.opcode == ReqOpcode.WRITE_NO_SNP_FULL else "await_data"
     while self.waiting_requests:
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
@@ -216,6 +235,14 @@ class Socket(Endpoint):
 
   def receive(self, message):
     super().receive(message)
+    if message.channel == Channel.RSP and message.opcode == RspOpcode.RETRY_ACK:
+      self.retry_requests[message.transaction_id] = (message.source_name, message.pcrd_type)
+      self.request_states[self.active_requests[message.transaction_id]] = "await_credit"
+      return
+    if message.channel == Channel.RSP and message.opcode == RspOpcode.PCRD_GRANT:
+      key = (message.source_name, message.pcrd_type)
+      self.protocol_credits[key] = self.protocol_credits.get(key, 0) + 1
+      return
     if (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
@@ -297,10 +324,13 @@ class Socket(Endpoint):
 
 class HomeWrapper(Endpoint):
   
-  def __init__(self, ring, node_name, storage_name, max_transactions=None, id_capacity=None):
+  def __init__(self, ring, node_name, storage_name, max_transactions=None, id_capacity=None, retry_enabled=False):
     super().__init__()
     validate_id_capacity(id_capacity)
     self.id_capacity = id_capacity
+    self.retry_enabled = retry_enabled
+    self.credit_waiters = []
+    self.credit_reservations = {}
     self.ring = ring
     self.node_name = node_name
     self.storage_name = storage_name
@@ -370,7 +400,23 @@ class HomeWrapper(Endpoint):
       opcode=opcode,
     ))
 
+  def advance_credits(self):
+    if not self.retry_enabled or not self.credit_waiters:
+      return
+    limits = [n for n in (self.max_transactions, self.id_capacity) if n is not None]
+    limit = min(limits) if limits else float("inf")
+    while self.credit_waiters and len(self.pending_requests) + sum(self.credit_reservations.values()) < limit:
+      source = self.credit_waiters.pop(0)
+      self.credit_reservations[source] = self.credit_reservations.get(source, 0) + 1
+      self.ring.inject(Message(self.node_name, source, transaction_id=0,
+                               channel=Channel.RSP, opcode=RspOpcode.PCRD_GRANT))
+
   def can_receive(self, message):
+    if self.retry_enabled and message.channel == Channel.REQ and message.allow_retry:
+      return True
+    return self._can_accept(message)
+
+  def _can_accept(self, message):
     if message.channel != Channel.REQ:
       return True
     if self.id_capacity is not None and len(self.pending_requests) >= self.id_capacity:
@@ -383,6 +429,20 @@ class HomeWrapper(Endpoint):
 
   def receive(self, message):
     super().receive(message)
+    if self.retry_enabled and message.channel == Channel.REQ:
+      reserved = sum(self.credit_reservations.values())
+      limits = [n for n in (self.max_transactions, self.id_capacity) if n is not None]
+      full = bool(limits) and len(self.pending_requests) + reserved >= min(limits)
+      if message.allow_retry and (full or not self._can_accept(message) or self.credit_waiters):
+        self.credit_waiters.append(message.source_name)
+        self.ring.inject(Message(self.node_name, message.source_name,
+                                 transaction_id=message.transaction_id,
+                                 channel=Channel.RSP, opcode=RspOpcode.RETRY_ACK))
+        return
+      if not message.allow_retry:
+        self.credit_reservations[message.source_name] -= 1
+        if not self.credit_reservations[message.source_name]:
+          del self.credit_reservations[message.source_name]
     if (
       message.channel == Channel.REQ
       and message.opcode

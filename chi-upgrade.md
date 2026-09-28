@@ -45,6 +45,9 @@
 
 ## 执行记录
 
+- C1：可选 `retry_enabled=True` 实现 RN→HF 的 RetryAck/PCrdGrant：首发 AllowRetry=1，无资源时交付请求并返回 RetryAck；HF FIFO 记录源节点，资源可用后预留槽并发类型 0 的 PCrdGrant；RN 按 `(源节点, credit类型)` 记账，兼容 Grant 先于 RetryAck，消耗一次 credit 后复制请求并设 AllowRetry=0 重发。原请求对象不被修改，保留历史关联。受同地址串行化约束的已授信请求仍可在网络等待，但不会再次 Retry。默认保持旧背压模式。
+- C1 依据 IHI0050 G B2.9 p.170（Grant 与 RetryAck 可重排、重发使用 credit、DAT/RSP/SNP 不可 Retry）。89 测试通过，包括重试混合压力与信用清空。尚未支持 HF→SN retry、多 credit 类型、PCrdReturn；链路级 credit 与上述 P-Credit 不同，后续 C2 处理。
+
 - B3b：已支持 RN/HF 接收 CompDBIDResp，同时处理 DBID 与完成语义，写数据仍只发送一次；OK/NDERR 与有界 ID 回收测试通过（87 测试）。正式依据现已固定为 IHI0050 G（Mar 2024），B2.3 pp.62–64；官方 PDF https://documentation-service.arm.com/static/69e73291379d3e7aaa33ab54 。默认 HF/S 仍产生分离响应，合并响应接收能力通过端点事件注入验证。
 
 - B3a 已完成分离写响应重排：RN 与 HF 下游请求者均分别保存 Comp 和数据发送状态，只有收到 Comp 且单拍写数据已提交可靠源队列后，才对上层发布完成并释放映射/TxnID。Comp 提前到达不会丢掉 payload 或导致尚未收到 DBID 的事务提前复用。OK/NDERR 原样保存并在最终完成时传播。
