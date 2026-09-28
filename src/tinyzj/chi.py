@@ -10,6 +10,7 @@ class Channel:
 class SnpOpcode:
 
   SNP_SHARED = "SnpShared"
+  SNP_UNIQUE = "SnpUnique"
 
 
 class ReqOpcode:
@@ -17,6 +18,7 @@ class ReqOpcode:
   READ_NO_SNP = "ReadNoSnp"
   WRITE_NO_SNP_FULL = "WriteNoSnpFull"
   READ_SHARED = "ReadShared"
+  READ_UNIQUE = "ReadUnique"
 
 
 class RspOpcode:

@@ -456,6 +456,97 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual({}, zhujiang.hf.pending_comp_acks)
     self.assertEqual([], zhujiang.ring.in_flight)
 
+  def test_read_unique_caches_uc(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    request = zhujiang.cc0.read_unique("0x1000")
+
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc0.read_response_for(request)
+    self.assertEqual(Resp.UC, response.resp)
+    self.assertEqual((Resp.UC, "value 1"), zhujiang.cc0.cache["0x1000"])
+    self.assertEqual({"n00": Resp.UC}, zhujiang.hf.directory["0x1000"])
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.active_reads)
+
+  def test_write_invalidates_sc_holder(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    zhujiang.cc0.read_shared("0x1000")
+    zhujiang.run_until_idle()
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc0.cache["0x1000"])
+
+    write_request = zhujiang.cc1.write("0x1000", "value 2")
+    zhujiang.run_until_idle()
+
+    self.assertNotIn("0x1000", zhujiang.cc0.cache)
+    self.assertEqual({}, zhujiang.hf.directory)
+    self.assertEqual("value 2", zhujiang.s.dj.data_by_address["0x1000"])
+    self.assertEqual(
+      RspOpcode.COMP,
+      zhujiang.cc1.write_response_for(write_request).opcode,
+    )
+    snp_uniques = [
+      message
+      for message in zhujiang.cc0.received_messages
+      if message.channel == Channel.SNP
+    ]
+    self.assertEqual(1, len(snp_uniques))
+    self.assertEqual(SnpOpcode.SNP_UNIQUE, snp_uniques[0].opcode)
+
+  def test_read_shared_downgrades_uc_holder(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    zhujiang.cc0.read_unique("0x1000")
+    zhujiang.run_until_idle()
+    second = zhujiang.cc1.read_shared("0x1000")
+
+    zhujiang.run_until_idle()
+
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc0.cache["0x1000"])
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc1.cache["0x1000"])
+    self.assertEqual(
+      {"n00": Resp.SC, "n11": Resp.SC},
+      zhujiang.hf.directory["0x1000"],
+    )
+    response = zhujiang.cc1.read_response_for(second)
+    self.assertEqual(Resp.SC, response.resp)
+
+  def test_write_invalidates_in_flight_read_before_it_caches(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    zhujiang.cc0.read_shared("0x1000")
+    zhujiang.run_until_idle()
+
+    zhujiang.cc1.read_shared("0x1000")
+    for _ in range(100):
+      if any(
+        message.opcode == ReqOpcode.READ_SHARED
+        for message in zhujiang.hf.received_messages
+      ):
+        break
+      zhujiang.step()
+    self.assertEqual(
+      (Resp.SC, "value 1"),
+      zhujiang.cc0.cache["0x1000"],
+    )
+
+    zhujiang.cc0.write("0x1000", "value 2")
+    zhujiang.run_until_idle()
+
+    self.assertNotIn("0x1000", zhujiang.cc1.cache)
+    self.assertEqual({}, zhujiang.hf.directory)
+    self.assertEqual("value 2", zhujiang.s.dj.data_by_address["0x1000"])
+
+    reread = zhujiang.cc1.read_shared("0x1000")
+    zhujiang.run_until_idle()
+    self.assertEqual(
+      (Resp.SC, "value 2"),
+      zhujiang.cc1.cache["0x1000"],
+    )
+    self.assertEqual("value 2", zhujiang.cc1.read_response_for(reread).payload)
+
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()
     cc0_request = zhujiang.cc0.read("0x1000")

@@ -78,6 +78,7 @@ class Socket(Endpoint):
     self.home_name = home_name
     self._responses = {}
     self.cache = {}
+    self.no_cache = set()
     self.pending_write_data = {}
     self.next_transaction_id = 0
 
@@ -95,10 +96,23 @@ class Socket(Endpoint):
       raise ValueError("read request needs an address")
     if address in self.cache:
       return None
+    self.no_cache.discard(address)
     return self._send_request(
       address=address,
       channel=Channel.REQ,
       opcode=ReqOpcode.READ_SHARED,
+    )
+
+  def read_unique(self, address):
+    if address is None:
+      raise ValueError("read request needs an address")
+    if address in self.cache and self.cache[address][0] == Resp.UC:
+      return None
+    self.no_cache.discard(address)
+    return self._send_request(
+      address=address,
+      channel=Channel.REQ,
+      opcode=ReqOpcode.READ_UNIQUE,
     )
 
   def write(self, address, data):
@@ -148,9 +162,12 @@ class Socket(Endpoint):
     ):
       key = (message.channel, message.opcode, message.transaction_id)
       self._responses[key] = message
-      if message.resp == Resp.SC:
-        if message.resp_err == RespErr.OK:
-          self.cache[message.address] = (Resp.SC, message.payload)
+      if message.resp in (Resp.SC, Resp.UC):
+        if (
+          message.resp_err == RespErr.OK
+          and message.address not in self.no_cache
+        ):
+          self.cache[message.address] = (message.resp, message.payload)
         self.ring.inject(
           Message(
             self.node_name,
@@ -167,6 +184,21 @@ class Socket(Endpoint):
       if message.address in self.cache:
         state, payload = self.cache[message.address]
         self.cache[message.address] = (Resp.SC, payload)
+      self.ring.inject(
+        Message(
+          self.node_name,
+          message.source_name,
+          transaction_id=message.transaction_id,
+          channel=Channel.RSP,
+          opcode=RspOpcode.SNP_RESP,
+        )
+      )
+    elif (
+      message.channel == Channel.SNP
+      and message.opcode == SnpOpcode.SNP_UNIQUE
+    ):
+      self.cache.pop(message.address, None)
+      self.no_cache.add(message.address)
       self.ring.inject(
         Message(
           self.node_name,
@@ -213,6 +245,7 @@ class HomeWrapper(Endpoint):
     self.pending_requests = {}
     self.pending_comp_acks = {}
     self.directory = {}
+    self.active_reads = {}
     self.pending_snoops = {}
     self.pending_write_data = {}
     self.next_home_id = 0
@@ -233,20 +266,34 @@ class HomeWrapper(Endpoint):
     super().receive(message)
     if (
       message.channel == Channel.REQ
-      and message.opcode in (ReqOpcode.READ_NO_SNP, ReqOpcode.READ_SHARED)
+      and message.opcode
+      in (ReqOpcode.READ_NO_SNP, ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
       home_id = self.next_home_id
       self.next_home_id += 1
       self.pending_requests[home_id] = message
+      self.active_reads.setdefault(message.address, {})[home_id] = {
+        "request": message,
+        "invalidated": False,
+      }
       holders = set(self.directory.get(message.address, {}))
-      if message.opcode == ReqOpcode.READ_SHARED and holders:
+      snoop_opcode = {
+        ReqOpcode.READ_SHARED: SnpOpcode.SNP_SHARED,
+        ReqOpcode.READ_UNIQUE: SnpOpcode.SNP_UNIQUE,
+      }.get(message.opcode)
+      if snoop_opcode and holders:
         self.pending_snoops[home_id] = {
           "address": message.address,
           "awaiting": holders,
+          "kind": "read",
         }
         for holder_name in holders:
+          if snoop_opcode == SnpOpcode.SNP_UNIQUE:
+            self.directory[message.address].pop(holder_name, None)
+          else:
+            self.directory[message.address][holder_name] = Resp.SC
           self.ring.inject(
             Message(
               self.node_name,
@@ -254,9 +301,11 @@ class HomeWrapper(Endpoint):
               address=message.address,
               transaction_id=home_id,
               channel=Channel.SNP,
-              opcode=SnpOpcode.SNP_SHARED,
+              opcode=snoop_opcode,
             )
           )
+        if not self.directory[message.address]:
+          del self.directory[message.address]
       else:
         storage_request = Message(
           self.node_name,
@@ -276,20 +325,50 @@ class HomeWrapper(Endpoint):
       home_id = self.next_home_id
       self.next_home_id += 1
       self.pending_requests[home_id] = message
-      dbid_response = Message(
-        self.node_name,
-        message.source_name,
-        transaction_id=message.transaction_id,
-        dbid=home_id,
-        channel=Channel.RSP,
-        opcode=RspOpcode.DBID_RESP,
-      )
-      self.ring.inject(dbid_response)
+      holders = set(self.directory.get(message.address, {}))
+      for entry in self.active_reads.get(message.address, {}).values():
+        holders.add(entry["request"].source_name)
+      if holders:
+        self.pending_snoops[home_id] = {
+          "address": message.address,
+          "awaiting": holders,
+          "kind": "write",
+          "request": message,
+        }
+        for holder_name in holders:
+          self.directory.get(message.address, {}).pop(holder_name, None)
+          for entry in self.active_reads.get(message.address, {}).values():
+            if entry["request"].source_name == holder_name:
+              entry["invalidated"] = True
+          self.ring.inject(
+            Message(
+              self.node_name,
+              holder_name,
+              address=message.address,
+              transaction_id=home_id,
+              channel=Channel.SNP,
+              opcode=SnpOpcode.SNP_UNIQUE,
+            )
+          )
+        if message.address in self.directory and not self.directory[message.address]:
+          del self.directory[message.address]
+      else:
+        dbid_response = Message(
+          self.node_name,
+          message.source_name,
+          transaction_id=message.transaction_id,
+          dbid=home_id,
+          channel=Channel.RSP,
+          opcode=RspOpcode.DBID_RESP,
+        )
+        self.ring.inject(dbid_response)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
     ):
-      request = self.pending_requests.pop(message.transaction_id)
+      request = self.pending_requests[message.transaction_id]
+      if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
+        self.pending_requests.pop(message.transaction_id)
       response = Message(
         self.node_name,
         request.source_name,
@@ -306,7 +385,12 @@ class HomeWrapper(Endpoint):
         response.resp = Resp.SC
         self.pending_comp_acks[
           (request.source_name, request.transaction_id)
-        ] = (message.address, message.resp_err)
+        ] = (message.address, message.resp_err, Resp.SC, message.transaction_id)
+      elif request.opcode == ReqOpcode.READ_UNIQUE:
+        response.resp = Resp.UC
+        self.pending_comp_acks[
+          (request.source_name, request.transaction_id)
+        ] = (message.address, message.resp_err, Resp.UC, message.transaction_id)
       self.ring.inject(response)
     elif (
       message.channel == Channel.RSP
@@ -316,24 +400,39 @@ class HomeWrapper(Endpoint):
       entry["awaiting"].discard(message.source_name)
       if not entry["awaiting"]:
         self.pending_snoops.pop(message.transaction_id)
-        storage_request = Message(
-          self.node_name,
-          self.storage_name,
-          address=entry["address"],
-          transaction_id=message.transaction_id,
-          channel=Channel.ERQ,
-          opcode=ReqOpcode.READ_NO_SNP,
-        )
-        self.ring.inject(storage_request)
+        if entry["kind"] == "write":
+          dbid_response = Message(
+            self.node_name,
+            entry["request"].source_name,
+            transaction_id=entry["request"].transaction_id,
+            dbid=message.transaction_id,
+            channel=Channel.RSP,
+            opcode=RspOpcode.DBID_RESP,
+          )
+          self.ring.inject(dbid_response)
+        else:
+          storage_request = Message(
+            self.node_name,
+            self.storage_name,
+            address=entry["address"],
+            transaction_id=message.transaction_id,
+            channel=Channel.ERQ,
+            opcode=ReqOpcode.READ_NO_SNP,
+          )
+          self.ring.inject(storage_request)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP_ACK
     ):
-      address, resp_err = self.pending_comp_acks.pop(
+      address, resp_err, state, home_id = self.pending_comp_acks.pop(
         (message.source_name, message.transaction_id)
       )
-      if resp_err == RespErr.OK:
-        self.directory.setdefault(address, {})[message.source_name] = Resp.SC
+      self.pending_requests.pop(home_id, None)
+      entry = self.active_reads.get(address, {}).pop(home_id, None)
+      if entry is not None and not entry["invalidated"] and resp_err == RespErr.OK:
+        self.directory.setdefault(address, {})[message.source_name] = state
+      if not self.active_reads.get(address):
+        self.active_reads.pop(address, None)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
