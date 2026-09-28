@@ -3,7 +3,6 @@ class Channel:
   REQ = "REQ"
   RSP = "RSP"
   DAT = "DAT"
-  ERQ = "ERQ"
   SNP = "SNP"
 
 

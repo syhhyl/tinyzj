@@ -77,7 +77,7 @@ class ZhujiangTest(unittest.TestCase):
           ],
         )
         self.assertEqual(
-          [(Channel.ERQ, ReqOpcode.READ_NO_SNP)],
+          [(Channel.REQ, ReqOpcode.READ_NO_SNP)],
           [
             (message.channel, message.opcode)
             for message in zhujiang.s.received_messages
@@ -86,6 +86,74 @@ class ZhujiangTest(unittest.TestCase):
         self.assertEqual(Channel.DAT, response.channel)
         self.assertEqual(DatOpcode.COMP_DATA, response.opcode)
         self.assertEqual({}, zhujiang.hf.pending_requests)
+
+  def test_read_no_snp_releases_address_after_success_or_error(self):
+    for error in (False, True):
+      with self.subTest(error=error):
+        address = "0x1000"
+        zhujiang = Zhujiang(error_addresses=[address] if error else [])
+        request = zhujiang.cc0.read(address)
+
+        zhujiang.run_until_idle()
+
+        response = zhujiang.cc0.read_response_for(request)
+        self.assertEqual(RespErr.DERR if error else RespErr.OK, response.resp_err)
+        self.assertEqual({}, zhujiang.hf.pending_requests)
+        self.assertEqual({}, zhujiang.hf.address_busy)
+        self.assertEqual({}, zhujiang.hf.pending_comp_acks)
+
+        second = zhujiang.cc1.read(address)
+        zhujiang.run_until_idle()
+        self.assertIsNotNone(zhujiang.cc1.read_response_for(second))
+        self.assertEqual({}, zhujiang.hf.address_busy)
+
+  def test_read_no_snp_unblocks_queued_same_address_requests(self):
+    for error in (False, True):
+      for operation in ("read", "read_shared", "read_unique", "write"):
+        with self.subTest(error=error, operation=operation):
+          address = "0x1000"
+          zhujiang = Zhujiang(
+            buffer_capacity=2,
+            max_transactions=1,
+            error_addresses=[address] if error else [],
+          )
+          zhujiang.s.dj.write(address, "old value")
+          first = zhujiang.cc0.read(address)
+          if operation == "write":
+            second = zhujiang.cc1.write(address, "new value")
+          else:
+            second = getattr(zhujiang.cc1, operation)(address)
+
+          zhujiang.run_until_idle(max_steps=100)
+
+          first_response = zhujiang.cc0.read_response_for(first)
+          self.assertEqual("old value", first_response.payload)
+          self.assertEqual(
+            RespErr.DERR if error else RespErr.OK, first_response.resp_err
+          )
+          if operation == "write":
+            response = zhujiang.cc1.write_response_for(second)
+            self.assertEqual(
+              RespErr.NDERR if error else RespErr.OK, response.resp_err
+            )
+            self.assertEqual(
+              "old value" if error else "new value",
+              zhujiang.s.dj.data_by_address[address],
+            )
+          else:
+            response = zhujiang.cc1.read_response_for(second)
+            self.assertEqual("old value", response.payload)
+            self.assertEqual(
+              RespErr.DERR if error else RespErr.OK, response.resp_err
+            )
+          self.assertEqual({}, zhujiang.hf.address_busy)
+          self.assertEqual({}, zhujiang.hf.pending_requests)
+          self.assertEqual({}, zhujiang.hf.pending_comp_acks)
+          self.assertEqual({}, zhujiang.hf.pending_snoops)
+          self.assertEqual({}, zhujiang.hf.pending_write_data)
+          self.assertEqual({}, zhujiang.s.pending_writes)
+          self.assertEqual({}, zhujiang.cc1.pending_write_data)
+          self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_cc0_write_is_visible_to_cc1_read(self):
     zhujiang = Zhujiang()
@@ -130,7 +198,7 @@ class ZhujiangTest(unittest.TestCase):
     )
     self.assertEqual(
       [
-        (Channel.ERQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.REQ, ReqOpcode.WRITE_NO_SNP_FULL),
         (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
       ],
       [
@@ -644,7 +712,7 @@ class ZhujiangTest(unittest.TestCase):
       "n00",
       "n10",
       channel=Channel.REQ,
-      opcode=ReqOpcode.READ_NO_SNP,
+      opcode=ReqOpcode.READ_SHARED,
     )
     zhujiang.ring.inject(request)
 

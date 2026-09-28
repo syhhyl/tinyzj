@@ -299,7 +299,7 @@ class HomeWrapper(Endpoint):
           self.storage_name,
           address=message.address,
           transaction_id=home_id,
-          channel=Channel.ERQ,
+          channel=Channel.REQ,
           opcode=ReqOpcode.READ_NO_SNP,
         )
         self.ring.inject(storage_request)
@@ -352,6 +352,11 @@ class HomeWrapper(Endpoint):
       request = self.pending_requests[message.transaction_id]
       if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
         self.pending_requests.pop(message.transaction_id)
+        busy = self.address_busy.get(request.address)
+        if busy is not None:
+          busy.discard(message.transaction_id)
+          if not busy:
+            self.address_busy.pop(request.address, None)
       response = Message(
         self.node_name,
         request.source_name,
@@ -399,7 +404,7 @@ class HomeWrapper(Endpoint):
             self.storage_name,
             address=entry["address"],
             transaction_id=message.transaction_id,
-            channel=Channel.ERQ,
+            channel=Channel.REQ,
             opcode=ReqOpcode.READ_NO_SNP,
           )
           self.ring.inject(storage_request)
@@ -429,7 +434,7 @@ class HomeWrapper(Endpoint):
         self.storage_name,
         address=request.address,
         transaction_id=message.transaction_id,
-        channel=Channel.ERQ,
+        channel=Channel.REQ,
         opcode=ReqOpcode.WRITE_NO_SNP_FULL,
       )
       self.ring.inject(storage_request)
@@ -482,7 +487,7 @@ class StorageWrapper(Endpoint):
   def receive(self, message):
     super().receive(message)
     if (
-      message.channel == Channel.ERQ
+      message.channel == Channel.REQ
       and message.opcode == ReqOpcode.READ_NO_SNP
     ):
       payload, data_present = self.dj.read(message.address)
@@ -502,7 +507,7 @@ class StorageWrapper(Endpoint):
       )
       self.ring.inject(response)
     elif (
-      message.channel == Channel.ERQ
+      message.channel == Channel.REQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
     ):
       dbid = self.next_dbid
