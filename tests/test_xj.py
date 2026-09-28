@@ -277,6 +277,19 @@ class TransportTest(unittest.TestCase):
     self.assertEqual("n00", incoming.current_node_name)
 
 
+class GatedEndpoint:
+
+  def __init__(self):
+    self.received_messages = []
+    self.open = False
+
+  def can_receive(self, message):
+    return self.open
+
+  def receive(self, message):
+    self.received_messages.append(message)
+
+
 class DeliveryTest(unittest.TestCase):
   def test_step_delivers_an_arrived_message_on_the_next_step(self):
     """Arrival and delivery occur on separate steps."""
@@ -296,13 +309,34 @@ class DeliveryTest(unittest.TestCase):
     self.assertEqual([message], endpoints["io"].received_messages)
     self.assertEqual([], ring.in_flight)
 
-  def test_step_delivers_all_messages_that_are_already_at_a_target(self):
-    """All messages already at a target are delivered in one step."""
+  def test_step_delivers_one_same_channel_message_per_node_per_step(self):
+    """One same-channel message delivers per node per step."""
     ring = make_ring()
     endpoints = connect_recording_endpoints(ring)
     messages = [
       Message("home", "home", "first local request", channel=Channel.REQ),
       Message("home", "home", "second local request", channel=Channel.REQ),
+    ]
+    for message in messages:
+      ring.inject(message)
+
+    ring.step()
+
+    self.assertEqual([messages[0]], endpoints["home"].received_messages)
+    self.assertEqual(1, len(ring.in_flight))
+
+    ring.step()
+
+    self.assertEqual(messages, endpoints["home"].received_messages)
+    self.assertEqual([], ring.in_flight)
+
+  def test_step_delivers_different_channel_messages_in_the_same_step(self):
+    """Different-channel messages deliver in the same step."""
+    ring = make_ring()
+    endpoints = connect_recording_endpoints(ring)
+    messages = [
+      Message("home", "home", "local request", channel=Channel.REQ),
+      Message("home", "home", "local data", channel=Channel.DAT),
     ]
     for message in messages:
       ring.inject(message)
@@ -341,6 +375,53 @@ class DeliveryTest(unittest.TestCase):
     ring.step()
 
     self.assertEqual([message], endpoints["cc"].received_messages)
+    self.assertEqual([], ring.in_flight)
+
+  def test_can_receive_false_holds_the_message_until_it_turns_true(self):
+    """can_receive False holds the message until it turns True."""
+    ring = make_ring()
+    gate = GatedEndpoint()
+    ring.connect("io", gate)
+    ring.connect("cc", RecordingEndpoint())
+    ring.connect("home", RecordingEndpoint())
+    injection = ring.inject(Message("cc", "io", "read request", channel=Channel.REQ))
+
+    ring.step()
+    ring.step()
+
+    self.assertEqual([], gate.received_messages)
+    self.assertEqual([injection], ring.in_flight)
+
+    gate.open = True
+    ring.step()
+
+    self.assertEqual([injection.message], gate.received_messages)
+    self.assertEqual([], ring.in_flight)
+
+  def test_blocked_local_message_does_not_hold_back_its_source_queue(self):
+    """A blocked local message leaves its source queue free to inject."""
+    ring = make_ring()
+    gate = GatedEndpoint()
+    cc_endpoint = RecordingEndpoint()
+    ring.connect("io", gate)
+    ring.connect("cc", cc_endpoint)
+    ring.connect("home", RecordingEndpoint())
+    local = ring.inject(Message("io", "io", "local request", channel=Channel.REQ))
+    outgoing = ring.inject(Message("io", "cc", "forwarded request", channel=Channel.REQ))
+
+    ring.step()
+
+    self.assertEqual([], gate.received_messages)
+    self.assertFalse(local.in_ring)
+    self.assertTrue(outgoing.in_ring)
+    self.assertEqual("cc", outgoing.current_node_name)
+    self.assertEqual([local, outgoing], ring.in_flight)
+
+    gate.open = True
+    ring.step()
+
+    self.assertEqual([local.message], gate.received_messages)
+    self.assertEqual([outgoing.message], cc_endpoint.received_messages)
     self.assertEqual([], ring.in_flight)
 
 

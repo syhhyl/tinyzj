@@ -4,7 +4,7 @@ from .xj import Message, Ring, RingNode
 
 class Zhujiang:
   
-  def __init__(self, buffer_capacity=None):
+  def __init__(self, buffer_capacity=None, max_transactions=None):
     self.ring = Ring([
       RingNode("n00", "CC0"),
       RingNode("n01", "HF"),
@@ -13,7 +13,12 @@ class Zhujiang:
     ], buffer_capacity=buffer_capacity)
 
     self.cc0 = Socket(self.ring, "n00", "n01")
-    self.hf = HomeWrapper(self.ring, "n01", "n10")
+    self.hf = HomeWrapper(
+      self.ring,
+      "n01",
+      "n10",
+      max_transactions=max_transactions,
+    )
     self.cc1 = Socket(self.ring, "n11", "n01")
     self.s = StorageWrapper(self.ring, "n10")
 
@@ -139,14 +144,25 @@ class Socket(Endpoint):
 
 class HomeWrapper(Endpoint):
   
-  def __init__(self, ring, node_name, storage_name):
+  def __init__(self, ring, node_name, storage_name, max_transactions=None):
     super().__init__()
     self.ring = ring
     self.node_name = node_name
     self.storage_name = storage_name
+    self.max_transactions = max_transactions
+    if max_transactions is not None:
+      if not isinstance(max_transactions, int) or max_transactions < 1:
+        raise ValueError("max_transactions must be a positive integer")
     self.pending_requests = {}
     self.pending_write_data = {}
     self.next_home_id = 0
+
+  def can_receive(self, message):
+    if self.max_transactions is None:
+      return True
+    if message.channel != Channel.REQ:
+      return True
+    return len(self.pending_requests) < self.max_transactions
 
   def receive(self, message):
     super().receive(message)

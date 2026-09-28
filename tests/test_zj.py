@@ -233,6 +233,89 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual([], zhujiang.ring.in_flight)
     self.assertGreater(steps, 0)
 
+  def test_single_slot_completes_write_while_read_waits_at_home(self):
+    zhujiang = Zhujiang(max_transactions=1)
+    write_request = zhujiang.cc0.write("0x1000", "value 1")
+    read_request = zhujiang.cc1.read("0x2000")
+
+    zhujiang.run_until_idle(max_steps=500)
+
+    self.assertEqual(
+      [
+        (Channel.REQ, ReqOpcode.WRITE_NO_SNP_FULL),
+        (Channel.DAT, DatOpcode.NON_COPY_BACK_WRITE_DATA),
+        (Channel.RSP, RspOpcode.DBID_RESP),
+        (Channel.RSP, RspOpcode.COMP),
+        (Channel.REQ, ReqOpcode.READ_NO_SNP),
+        (Channel.DAT, DatOpcode.COMP_DATA),
+      ],
+      [
+        (message.channel, message.opcode)
+        for message in zhujiang.hf.received_messages
+      ],
+    )
+    self.assertEqual(
+      RspOpcode.COMP,
+      zhujiang.cc0.write_response_for(write_request).opcode,
+    )
+    self.assertEqual("value 1", zhujiang.s.dj.data_by_address["0x1000"])
+    read_response = zhujiang.cc1.read_response_for(read_request)
+    self.assertEqual("read data", read_response.payload)
+    self.assertFalse(read_response.data_present)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_write_data)
+    self.assertEqual({}, zhujiang.s.pending_writes)
+    self.assertEqual({}, zhujiang.cc0.pending_write_data)
+    self.assertEqual({}, zhujiang.cc1.pending_write_data)
+    self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_finite_buffers_and_one_slot_complete_eight_alternating_transactions(self):
+    zhujiang = Zhujiang(buffer_capacity=2, max_transactions=1)
+    expected_reads = {}
+    expected_writes = {}
+
+    for cc_name in ("cc0", "cc1"):
+      cc = getattr(zhujiang, cc_name)
+      for index in range(4):
+        read_address = f"{cc_name}-read-{index}"
+        read_data = f"{cc_name} initial {index}"
+        zhujiang.s.dj.write(read_address, read_data)
+        read_request = cc.read(read_address)
+        expected_reads[read_request] = read_data
+
+        write_address = f"{cc_name}-write-{index}"
+        write_data = f"{cc_name} written {index}"
+        write_request = cc.write(write_address, write_data)
+        expected_writes[write_request] = write_data
+
+    steps = zhujiang.run_until_idle(max_steps=500)
+    self.assertGreater(steps, 0)
+
+    for cc_name in ("cc0", "cc1"):
+      cc = getattr(zhujiang, cc_name)
+      self.assertEqual(
+        8,
+        len([
+          message
+          for message in cc.received_messages
+          if message.opcode in (DatOpcode.COMP_DATA, RspOpcode.COMP)
+        ]),
+      )
+    for request, expected in expected_reads.items():
+      cc = zhujiang.cc0 if request.source_name == "n00" else zhujiang.cc1
+      self.assertEqual(expected, cc.read_response_for(request).payload)
+    for request, expected in expected_writes.items():
+      cc = zhujiang.cc0 if request.source_name == "n00" else zhujiang.cc1
+      self.assertEqual(expected, zhujiang.s.dj.data_by_address[request.address])
+      self.assertEqual(RspOpcode.COMP, cc.write_response_for(request).opcode)
+
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_write_data)
+    self.assertEqual({}, zhujiang.s.pending_writes)
+    self.assertEqual({}, zhujiang.cc0.pending_write_data)
+    self.assertEqual({}, zhujiang.cc1.pending_write_data)
+    self.assertEqual([], zhujiang.ring.in_flight)
+
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()
     cc0_request = zhujiang.cc0.read("0x1000")
@@ -365,6 +448,15 @@ class ZhujiangTest(unittest.TestCase):
 
     with self.assertRaisesRegex(ValueError, "max_steps must be non-negative"):
       zhujiang.run_until_idle(max_steps=-1)
+
+  def test_rejects_invalid_max_transactions(self):
+    for value in (0, -1, 1.5, "1"):
+      with self.subTest(max_transactions=value):
+        with self.assertRaisesRegex(
+          ValueError,
+          "max_transactions must be a positive integer",
+        ):
+          Zhujiang(max_transactions=value)
 
 
 if __name__ == "__main__":

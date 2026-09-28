@@ -151,13 +151,17 @@ class Ring:
       for node_name, buffers in self.ring_buffers.items()
       for (direction, channel), buffer in buffers.items()
     }
-    arrived = [
+    waiting = [
       injection
       for injection in initial
       if injection.current_node_name == injection.message.target_name
     ]
-    receivers = []
-    for injection in arrived:
+    deliveries = []
+    delivery_slots = set()
+    for injection in waiting:
+      slot = (injection.current_node_name, injection.message.channel)
+      if slot in delivery_slots:
+        continue
       receiver = self.connections[injection.current_node_name]
       if receiver is None:
         raise ValueError(
@@ -167,15 +171,20 @@ class Ring:
         raise TypeError(
           f"ring node cannot receive messages: {injection.current_node_name}"
         )
-      receivers.append(receiver)
+      delivery_slots.add(slot)
+      can_receive = getattr(receiver, "can_receive", None)
+      if callable(can_receive) and not can_receive(injection.message):
+        continue
+      deliveries.append((injection, receiver))
 
-    for injection, receiver in zip(arrived, receivers):
+    for injection, receiver in deliveries:
       receiver.receive(injection.message)
 
     new_injections = [
       injection for injection in self.in_flight if injection not in initial
     ]
-    for injection in arrived:
+    delivered = [injection for injection, _ in deliveries]
+    for injection in delivered:
       message = injection.message
       if injection.in_ring:
         self.ring_buffers[injection.current_node_name][
@@ -187,11 +196,13 @@ class Ring:
         )
 
     self.in_flight = [
-      injection for injection in initial if injection not in arrived
+      injection for injection in initial if injection not in delivered
     ] + new_injections
     occupied_links = set()
     for injection in initial:
-      if not injection.in_ring or injection in arrived:
+      if not injection.in_ring:
+        continue
+      if injection.current_node_name == injection.message.target_name:
         continue
       current_index = self._node_index(injection.current_node_name)
       next_index = (current_index + injection.direction) % len(self.nodes)
@@ -223,7 +234,9 @@ class Ring:
     queue_heads = []
     seen_queues = set()
     for injection in initial:
-      if injection.in_ring or injection in arrived:
+      if injection.in_ring:
+        continue
+      if injection.current_node_name == injection.message.target_name:
         continue
       queue_key = (injection.message.source_name, injection.message.channel)
       if queue_key in seen_queues:
