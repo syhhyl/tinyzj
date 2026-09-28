@@ -191,6 +191,17 @@ class Socket(Endpoint):
   def write_no_snp(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
 
+  def write_no_snp_partial(self, address, data, byte_enable):
+    if type(address) is not int or address < 0 or address % 64:
+      raise ValueError("partial line write requires a 64-byte aligned integer address")
+    if not isinstance(data, bytes) or len(data) != 64:
+      raise ValueError("partial line write requires 64 bytes")
+    if type(byte_enable) is not int or not 0 <= byte_enable < (1 << 64):
+      raise ValueError("byte_enable must be a 64-bit mask")
+    request = self._write(address, data, ReqOpcode.WRITE_NO_SNP_PTL)
+    request.byte_enable = byte_enable
+    return request
+
   def write_unique(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_UNIQUE_FULL)
 
@@ -242,7 +253,7 @@ class Socket(Endpoint):
         retry.pcrd_type = credit_key[1]
         self.ring.inject(retry)
         self.retry_requests.pop(txn_id)
-        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
+        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
     for request in list(self.waiting_requests):
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
@@ -252,7 +263,7 @@ class Socket(Endpoint):
       txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
       request.transaction_id = txn_id
       self.active_requests[txn_id] = request
-      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
+      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
       if request in self.waiting_write_data:
         self.pending_write_data[txn_id] = self.waiting_write_data.pop(request)
       self.ring.inject(request)
@@ -366,6 +377,7 @@ class Socket(Endpoint):
         channel=Channel.DAT,
         opcode=DatOpcode.COPY_BACK_WRITE_DATA if copyback else DatOpcode.NON_COPY_BACK_WRITE_DATA,
         resp=state if copyback else None,
+        byte_enable=request.byte_enable,
       )
       self.send(write_data)
       self.write_data_sent.add(message.transaction_id)
@@ -491,6 +503,7 @@ class HomeWrapper(Endpoint):
       transaction_id=downstream_id,
       channel=Channel.REQ,
       opcode=opcode,
+      byte_enable=request.byte_enable,
     ))
 
   def advance_credits(self):
@@ -582,7 +595,7 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL)
+      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
@@ -670,7 +683,11 @@ class HomeWrapper(Endpoint):
     ):
       home_id = self.write_dbids.pop(message.transaction_id)
       self.pending_write_data[home_id] = message.payload
-      self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
+      request = self.pending_requests[home_id]
+      request_mask = request.byte_enable
+      if message.byte_enable != request_mask:
+        raise ValueError("write data byte enable differs from request metadata")
+      self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_PTL if request.opcode == ReqOpcode.WRITE_NO_SNP_PTL else ReqOpcode.WRITE_NO_SNP_FULL)
     elif (
       message.channel == Channel.RSP
       and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
@@ -682,6 +699,7 @@ class HomeWrapper(Endpoint):
         transaction_id=message.dbid,
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
+        byte_enable=self.pending_requests[self.downstream_requests[message.transaction_id]].byte_enable,
       )
       self.send(write_data)
       self.downstream_data_sent.add(message.transaction_id)
@@ -747,7 +765,7 @@ class StorageWrapper(Endpoint):
     self.next_dbid = 0
 
   def can_receive(self, message):
-    if message.channel != Channel.REQ or message.opcode != ReqOpcode.WRITE_NO_SNP_FULL:
+    if message.channel != Channel.REQ or message.opcode not in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL):
       return True
     return self.id_capacity is None or len(self.pending_writes) < self.id_capacity
 
@@ -777,7 +795,7 @@ class StorageWrapper(Endpoint):
       self.send(response)
     elif (
       message.channel == Channel.REQ
-      and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
+      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL)
     ):
       dbid = allocate_id(self, "next_dbid", self.pending_writes)
       self.pending_writes[dbid] = message
@@ -796,7 +814,10 @@ class StorageWrapper(Endpoint):
     ):
       request = self.pending_writes.pop(message.transaction_id)
       if request.address not in self.error_addresses:
-        self.dj.write(request.address, message.payload)
+        if request.opcode == ReqOpcode.WRITE_NO_SNP_PTL:
+          self.dj.write_partial(request.address, message.payload, message.byte_enable)
+        else:
+          self.dj.write(request.address, message.payload)
       response = Message(
         self.node_name,
         message.source_name,

@@ -8,6 +8,28 @@ from tinyzj.zj import Zhujiang
 
 class DataTest(unittest.TestCase):
 
+  def test_partial_write_masks_across_packet_boundaries(self):
+    for width in (16, 32, 64):
+      system = Zhujiang(data_width=width, id_capacity=1, buffer_capacity=2)
+      original = bytes(range(64))
+      system.s.dj.write(128, original)
+      mask = sum(1 << i for i in (0, 15, 16, 31, 32, 63))
+      request = system.cc0.write_no_snp_partial(128, bytes([255]) * 64, mask)
+      system.run_until_idle(500)
+      self.assertIsNotNone(system.cc0.write_response_for(request))
+      self.assertEqual(bytes(255 if mask & (1 << i) else i for i in range(64)),
+                       system.s.dj.data_by_address[128])
+      system.cc0.write_no_snp_partial(128, bytes(64), 0)
+      system.run_until_idle(500)
+      self.assertEqual(255, system.s.dj.data_by_address[128][63])
+
+  def test_partial_write_rejects_invalid_inputs_before_injection(self):
+    system = Zhujiang()
+    for address, data, mask in ((1, bytes(64), 1), (0, b"x", 1), (0, bytes(64), -1)):
+      with self.assertRaises(ValueError):
+        system.cc0.write_no_snp_partial(address, data, mask)
+    self.assertFalse(system.ring.in_flight)
+
   def test_reordered_packets_complete_only_when_all_arrive(self):
     for width in (16, 32, 64):
       assembler = DataAssembly(width)

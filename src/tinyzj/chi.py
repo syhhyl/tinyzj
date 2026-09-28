@@ -16,6 +16,7 @@ class ReqOpcode:
 
   READ_NO_SNP = "ReadNoSnp"
   WRITE_NO_SNP_FULL = "WriteNoSnpFull"
+  WRITE_NO_SNP_PTL = "WriteNoSnpPtl"
   WRITE_UNIQUE_FULL = "WriteUniqueFull"
   WRITE_BACK_FULL = "WriteBackFull"
   READ_SHARED = "ReadShared"

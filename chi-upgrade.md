@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- E2：新增显式 `write_no_snp_partial(aligned_address, bytes64, byte_enable)`，经 HF→S 的 WriteNoSnpPtl 更新选中字节。BE 按 DAT 包拆分/合并，未使能的线上字节置零；支持零掩码（IHI0050 G B2.8.3 p.156，Normal memory）。103 测试通过，覆盖跨 16/32-byte 边界掩码、零掩码及输入拒绝。当前仅支持完整 64-byte 地址窗口；子行 Size/Device memory 尚未支持，REQ 中 BE 仅是本模型的传递元数据。
+
 - E1：64-byte bytes 数据按可配置 16/32/64-byte DAT 宽度拆包，DataID 分别为 0/1/2/3、0/2、0（IHI0050 G B2.8 p.157）。所有 RN/HF/S 数据接收先按源/TxnID/opcode 收齐，才进入原完成逻辑；支持重排、RespErr 汇总，重复包与不一致固定字段拒绝。普通教学字符串保持单 payload。101 测试通过，涵盖写/读/dirty snoop/copyback/Home 驱逐和有限资源组合；line_bytes 是 Python 收包元数据，不是 CHI 线上字段。子行 Size/BE 与 poison 留到后续增量。
 
 - D2d：新增 Home 显式 `evict(address)`，对无人持有、无在途事务的 Home dirty 行通过下游 WriteNoSnpFull 刷入 S。复用独立下游 TxnID/DBID 和写完成条件，Comp 成功前始终保留 dirty 数据，NDERR 后保留可重试；资源和地址锁最终回收。98 测试通过，包括失败后重新驱逐。此 API 是本地 Home cache 操作，不是新增 CHI opcode；自动容量替换策略尚未实现。
