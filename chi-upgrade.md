@@ -45,6 +45,9 @@
 
 ## 执行记录
 
+- B3a 已完成分离写响应重排：RN 与 HF 下游请求者均分别保存 Comp 和数据发送状态，只有收到 Comp 且单拍写数据已提交可靠源队列后，才对上层发布完成并释放映射/TxnID。Comp 提前到达不会丢掉 payload 或导致尚未收到 DBID 的事务提前复用。OK/NDERR 原样保存并在最终完成时传播。
+- B3a 验收为端点级注入两种合法事件顺序（Comp→DBIDResp、DBIDResp→Comp），分别检查 RN 与 HF 数据、ID、资源持有/清理及响应历史；默认 SN 仍维持写数据接收后产生 Comp，未改变内存写入顺序。86 个测试通过。后续 B3b 补 CompDBIDResp 合并响应；多 beat 完成条件留 E 阶段。
+
 - B2 已完成当前单拍顺序响应路径的 RN 状态与释放：请求状态记录 queued、await_data、await_dbid、await_comp、send_comp_ack、complete。收到读完成数据并把必需的 CompAck 放入可靠源队列后释放 RN TxnID；HF 仍等 CompAck 真正交付才释放 Home DBID/地址锁。删除 RN 的 pending_acks 全网扫描机制。参考 Arm 官方 Transaction flows： https://developer.arm.com/documentation/102407/0102/Transaction-flows ，RN 发送完成确认与 HN 接收后解锁分别是本地事件。
 - `Ring.inject()` 当前无失败且源队列无限，提交队列视作发送责任转移；若后续 C 引入有界源队列/握手，释放条件必须改为明确的发送接受事件。send_comp_ack 在当前模型中为同步瞬态，不占额外 step。状态历史用于教学与验证，仍非所有 CHI opcode 的通用状态机；Comp 早于 DBIDResp 等写响应重排留在 B3。
 - B2 验收：旧 CompAck 在途时容量 1 的 RN 复用 TxnID；人工延迟 CompAck 交付时 HF 仍持有原事务与地址锁，恢复后所有请求完成；84 测试通过。A3b 的交付后复用策略已由本条替代。

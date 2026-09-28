@@ -105,6 +105,8 @@ class Socket(Endpoint):
     self.waiting_requests = []
     self.waiting_write_data = {}
     self.request_states = {}
+    self.write_completions = {}
+    self.write_data_sent = set()
     self.ring = ring
     self.node_name = node_name
     self.home_name = home_name
@@ -203,6 +205,15 @@ class Socket(Endpoint):
       (Channel.RSP, RspOpcode.COMP, request)
     )
 
+  def _finish_write(self, txn_id):
+    if txn_id not in self.write_data_sent or txn_id not in self.write_completions:
+      return
+    request = self.active_requests.pop(txn_id)
+    self._responses[(Channel.RSP, RspOpcode.COMP, request)] = self.write_completions.pop(txn_id)
+    self.write_data_sent.remove(txn_id)
+    self.pending_write_data.pop(txn_id)
+    self.request_states[request] = "complete"
+
   def receive(self, message):
     super().receive(message)
     if (
@@ -270,17 +281,16 @@ class Socket(Endpoint):
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
       )
       self.ring.inject(write_data)
+      self.write_data_sent.add(message.transaction_id)
       request = self.active_requests[message.transaction_id]
       self.request_states[request] = "await_comp"
+      self._finish_write(message.transaction_id)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP
     ):
-      self.pending_write_data.pop(message.transaction_id)
-      request = self.active_requests.pop(message.transaction_id)
-      key = (message.channel, message.opcode, request)
-      self._responses[key] = message
-      self.request_states[request] = "complete"
+      self.write_completions[message.transaction_id] = message
+      self._finish_write(message.transaction_id)
 
 
 class HomeWrapper(Endpoint):
@@ -308,6 +318,30 @@ class HomeWrapper(Endpoint):
     self.next_dbid = 0
     self.write_dbids = {}
     self.next_snoop_id = 0
+    self.downstream_completions = {}
+    self.downstream_data_sent = set()
+
+  def _finish_downstream_write(self, txn_id):
+    if txn_id not in self.downstream_data_sent or txn_id not in self.downstream_completions:
+      return
+    completion = self.downstream_completions.pop(txn_id)
+    self.downstream_data_sent.remove(txn_id)
+    home_id = self.downstream_requests.pop(txn_id)
+    request = self.pending_requests.pop(home_id)
+    self.pending_write_data.pop(home_id)
+    busy = self.address_busy.get(request.address)
+    if busy is not None:
+      busy.discard(home_id)
+      if not busy:
+        self.address_busy.pop(request.address, None)
+    self.ring.inject(Message(
+      self.node_name,
+      request.source_name,
+      transaction_id=request.transaction_id,
+      resp_err=completion.resp_err,
+      channel=Channel.RSP,
+      opcode=RspOpcode.COMP,
+    ))
 
   def _send_write_dbid(self, home_id):
     request = self.pending_requests[home_id]
@@ -510,27 +544,14 @@ class HomeWrapper(Endpoint):
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
       )
       self.ring.inject(write_data)
+      self.downstream_data_sent.add(message.transaction_id)
+      self._finish_downstream_write(message.transaction_id)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP
     ):
-      home_id = self.downstream_requests.pop(message.transaction_id)
-      request = self.pending_requests.pop(home_id)
-      self.pending_write_data.pop(home_id)
-      busy = self.address_busy.get(request.address)
-      if busy is not None:
-        busy.discard(home_id)
-        if not busy:
-          self.address_busy.pop(request.address, None)
-      response = Message(
-        self.node_name,
-        request.source_name,
-        transaction_id=request.transaction_id,
-        resp_err=message.resp_err,
-        channel=Channel.RSP,
-        opcode=RspOpcode.COMP,
-      )
-      self.ring.inject(response)
+      self.downstream_completions[message.transaction_id] = message
+      self._finish_downstream_write(message.transaction_id)
     
 
 class StorageWrapper(Endpoint):

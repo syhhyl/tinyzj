@@ -15,9 +15,13 @@ class StressTest(unittest.TestCase):
     self.assertFalse(system.s.pending_writes)
     self.assertFalse(system.hf.downstream_requests)
     self.assertFalse(system.hf.write_dbids)
+    self.assertFalse(system.hf.downstream_completions)
+    self.assertFalse(system.hf.downstream_data_sent)
     holders = {}
     for cc in (system.cc0, system.cc1):
       self.assertFalse(cc.pending_write_data)
+      self.assertFalse(cc.write_completions)
+      self.assertFalse(cc.write_data_sent)
       self.assertFalse(cc.has_pending_requests())
       self.assertTrue(all(state == "complete" for state in cc.request_states.values()))
       self.assertFalse(cc.waiting_write_data)
