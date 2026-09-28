@@ -10,6 +10,7 @@ from .chi import (
   SnpOpcode,
 )
 from .dj import DongJiang
+from .data import DataAssembly, packets
 from .xj import Message, Ring, RingNode
 
 
@@ -42,8 +43,11 @@ class Zhujiang:
     id_capacity=None,
     retry_enabled=False,
     credit_return_delay=1,
+    data_width=16,
   ):
     validate_id_capacity(id_capacity)
+    if type(data_width) is not int or data_width not in (16, 32, 64):
+      raise ValueError("data_width must be 16, 32, or 64 bytes")
     self.ring = Ring([
       RingNode("n00", "CC0"),
       RingNode("n01", "HF"),
@@ -72,6 +76,9 @@ class Zhujiang:
     self.ring.connect("n01", self.hf)
     self.ring.connect("n11", self.cc1)
     self.ring.connect("n10", self.s)
+    for endpoint in (self.cc0, self.cc1, self.hf, self.s):
+      endpoint.data_width = data_width
+      endpoint.data_assembly = DataAssembly(data_width)
 
   def step(self):
     self.ring.step()
@@ -96,9 +103,16 @@ class Endpoint:
 
   def __init__(self):
     self.received_messages = []
+    self.data_width = 16
+    self.data_assembly = DataAssembly(self.data_width)
+
+  def send(self, message):
+    for packet in packets(message, self.data_width):
+      self.ring.inject(packet)
 
   def receive(self, message):
     self.received_messages.append(message)
+    return self.data_assembly.accept(message)
 
 
 class Socket(Endpoint):
@@ -263,7 +277,9 @@ class Socket(Endpoint):
     self.request_states[request] = "complete"
 
   def receive(self, message):
-    super().receive(message)
+    message = super().receive(message)
+    if message is None:
+      return
     if message.channel == Channel.RSP and message.opcode == RspOpcode.RETRY_ACK:
       self.retry_requests[message.transaction_id] = (message.source_name, message.pcrd_type)
       self.request_states[self.active_requests[message.transaction_id]] = "await_credit"
@@ -302,7 +318,7 @@ class Socket(Endpoint):
       if message.address in self.cache:
         state, payload = self.cache[message.address]
         self.cache[message.address] = (Resp.SC, payload)
-      self.ring.inject(
+      self.send(
         Message(
           self.node_name,
           message.source_name,
@@ -321,7 +337,7 @@ class Socket(Endpoint):
       dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
       payload = self.cache[message.address][1] if dirty else None
       self.cache.pop(message.address, None)
-      self.ring.inject(
+      self.send(
         Message(
           self.node_name,
           message.source_name,
@@ -351,7 +367,7 @@ class Socket(Endpoint):
         opcode=DatOpcode.COPY_BACK_WRITE_DATA if copyback else DatOpcode.NON_COPY_BACK_WRITE_DATA,
         resp=state if copyback else None,
       )
-      self.ring.inject(write_data)
+      self.send(write_data)
       self.write_data_sent.add(message.transaction_id)
       if message.opcode == RspOpcode.COMP_DBID_RESP:
         self.write_completions[message.transaction_id] = message
@@ -505,7 +521,9 @@ class HomeWrapper(Endpoint):
     return len(self.pending_requests) < self.max_transactions
 
   def receive(self, message):
-    super().receive(message)
+    message = super().receive(message)
+    if message is None:
+      return
     if self.retry_enabled and message.channel == Channel.REQ:
       reserved = sum(self.credit_reservations.values())
       limits = [n for n in (self.max_transactions, self.id_capacity) if n is not None]
@@ -665,7 +683,7 @@ class HomeWrapper(Endpoint):
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
       )
-      self.ring.inject(write_data)
+      self.send(write_data)
       self.downstream_data_sent.add(message.transaction_id)
       if message.opcode == RspOpcode.COMP_DBID_RESP:
         self.downstream_completions[message.transaction_id] = message
@@ -712,7 +730,7 @@ class HomeWrapper(Endpoint):
         self.pending_comp_acks[
           (request.source_name, home_id)
         ] = (address, resp_err, Resp.UC, home_id)
-      self.ring.inject(response)
+      self.send(response)
     
 
 class StorageWrapper(Endpoint):
@@ -734,7 +752,9 @@ class StorageWrapper(Endpoint):
     return self.id_capacity is None or len(self.pending_writes) < self.id_capacity
 
   def receive(self, message):
-    super().receive(message)
+    message = super().receive(message)
+    if message is None:
+      return
     if (
       message.channel == Channel.REQ
       and message.opcode == ReqOpcode.READ_NO_SNP
@@ -754,7 +774,7 @@ class StorageWrapper(Endpoint):
         channel=Channel.DAT,
         opcode=DatOpcode.COMP_DATA,
       )
-      self.ring.inject(response)
+      self.send(response)
     elif (
       message.channel == Channel.REQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL

@@ -30,6 +30,8 @@ class Message:
     allow_retry=True,
     pcrd_type=0,
     pass_dirty=False,
+    data_id=0,
+    line_bytes=None,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -53,6 +55,8 @@ class Message:
     self.allow_retry = allow_retry
     self.pcrd_type = pcrd_type
     self.pass_dirty = pass_dirty
+    self.data_id = data_id
+    self.line_bytes = line_bytes
 
 class Injection:
 
