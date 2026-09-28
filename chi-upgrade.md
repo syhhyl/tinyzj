@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- D2a：新增 UD 与显式 store_cached（仅在已有 UC/UD 所有权时允许）；SnpShared/SnpUnique 对 UD 返回 DAT/SnpRespData 并携带 pass_dirty，HF 接管最新数据至 dirty_data，从而后续一致性读不误取 S 的旧副本。成功一致性写后清除 Home dirty 副本，失败保留。94 测试通过。此增量仅覆盖 dirty 数据转交给 Home 的路径，尚无容量受限 Home cache、驱逐与 CopyBack Write；store_cached 是显式本地 CPU 操作，尚未提供与在途同地址请求的 CPU 排序语义。
+
 - D1：将教学 write() 的一致性失效行为明确为 WriteUniqueFull，新增 write_unique()/write_no_snp() 两种显式 API。HF 仅对一致性写发失效 snoop，下游仍使用 WriteNoSnpFull；显式非一致性写不会替调用者维护缓存一致性。更新原测试中的 RN→HF opcode 期望，下游期望不变；增加非一致性写不失效与一致性写失效的对照测试。92 测试通过。D2 dirty 与数据 snoop 尚未完成。
 
 - C2：有限环缓冲增加独立于协议 P-Credit 的每方向/通道发送 credit 计数；传输消耗 credit，接收缓冲释放后延迟归还。`credit_return_delay` 默认 1，保持原快照时序；保留气泡注入至少 2 个 credit 和快照占用保护。逐步验证 `可用credit + 占用 + 返回途中credit = 容量`，延迟 1/3/8 与 retry 组合均完成；90 测试通过。此为 packet 级网络信用模型，尚未模拟 CHI 链路激活、FLITPEND、LCRDV 信号和 flit 编码。

@@ -29,6 +29,7 @@ class Message:
     home_nid=None,
     allow_retry=True,
     pcrd_type=0,
+    pass_dirty=False,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -51,6 +52,7 @@ class Message:
     self.home_nid = home_nid
     self.allow_retry = allow_retry
     self.pcrd_type = pcrd_type
+    self.pass_dirty = pass_dirty
 
 class Injection:
 

@@ -36,6 +36,7 @@ class DatOpcode:
 
   COMP_DATA = "CompData"
   NON_COPY_BACK_WRITE_DATA = "NonCopyBackWriteData"
+  SNP_RESP_DATA = "SnpRespData"
 
 
 class RespErr:
@@ -49,5 +50,6 @@ class RespErr:
 class Resp:
 
   UC = "UC"
+  UD = "UD"
   SC = "SC"
   I = "I"

@@ -146,13 +146,18 @@ class Socket(Endpoint):
   def read_unique(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    if address in self.cache and self.cache[address][0] == Resp.UC:
+    if address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD):
       return None
     return self._send_request(
       address=address,
       channel=Channel.REQ,
       opcode=ReqOpcode.READ_UNIQUE,
     )
+
+  def store_cached(self, address, data):
+    if address not in self.cache or self.cache[address][0] not in (Resp.UC, Resp.UD):
+      raise ValueError("cached store requires unique ownership")
+    self.cache[address] = (Resp.UD, data)
 
   def write(self, address, data):
     return self.write_unique(address, data)
@@ -278,6 +283,8 @@ class Socket(Endpoint):
       message.channel == Channel.SNP
       and message.opcode == SnpOpcode.SNP_SHARED
     ):
+      dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
+      payload = self.cache[message.address][1] if dirty else None
       if message.address in self.cache:
         state, payload = self.cache[message.address]
         self.cache[message.address] = (Resp.SC, payload)
@@ -286,22 +293,30 @@ class Socket(Endpoint):
           self.node_name,
           message.source_name,
           transaction_id=message.transaction_id,
-          channel=Channel.RSP,
-          opcode=RspOpcode.SNP_RESP,
+          payload=payload,
+          channel=Channel.DAT if dirty else Channel.RSP,
+          opcode=DatOpcode.SNP_RESP_DATA if dirty else RspOpcode.SNP_RESP,
+          resp=Resp.SC,
+          pass_dirty=dirty,
         )
       )
     elif (
       message.channel == Channel.SNP
       and message.opcode == SnpOpcode.SNP_UNIQUE
     ):
+      dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
+      payload = self.cache[message.address][1] if dirty else None
       self.cache.pop(message.address, None)
       self.ring.inject(
         Message(
           self.node_name,
           message.source_name,
           transaction_id=message.transaction_id,
-          channel=Channel.RSP,
-          opcode=RspOpcode.SNP_RESP,
+          payload=payload,
+          channel=Channel.DAT if dirty else Channel.RSP,
+          opcode=DatOpcode.SNP_RESP_DATA if dirty else RspOpcode.SNP_RESP,
+          resp=Resp.I,
+          pass_dirty=dirty,
         )
       )
     elif (
@@ -360,6 +375,7 @@ class HomeWrapper(Endpoint):
     self.next_dbid = 0
     self.write_dbids = {}
     self.next_snoop_id = 0
+    self.dirty_data = {}
     self.downstream_completions = {}
     self.downstream_data_sent = set()
 
@@ -371,6 +387,8 @@ class HomeWrapper(Endpoint):
     home_id = self.downstream_requests.pop(txn_id)
     request = self.pending_requests.pop(home_id)
     self.pending_write_data.pop(home_id)
+    if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
+      self.dirty_data.pop(request.address, None)
     busy = self.address_busy.get(request.address)
     if busy is not None:
       busy.discard(home_id)
@@ -399,6 +417,10 @@ class HomeWrapper(Endpoint):
     ))
 
   def _send_storage_request(self, home_id, opcode):
+    request = self.pending_requests[home_id]
+    if opcode == ReqOpcode.READ_NO_SNP and request.opcode != ReqOpcode.READ_NO_SNP and request.address in self.dirty_data:
+      self._complete_read(home_id, self.dirty_data[request.address], request.address, True, RespErr.OK)
+      return
     downstream_id = allocate_id(self, "next_downstream_id", self.downstream_requests)
     self.downstream_requests[downstream_id] = home_id
     self.ring.inject(Message(
@@ -534,46 +556,14 @@ class HomeWrapper(Endpoint):
       and message.opcode == DatOpcode.COMP_DATA
     ):
       home_id = self.downstream_requests.pop(message.transaction_id)
-      request = self.pending_requests[home_id]
-      if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
-        self.pending_requests.pop(home_id)
-        busy = self.address_busy.get(request.address)
-        if busy is not None:
-          busy.discard(home_id)
-          if not busy:
-            self.address_busy.pop(request.address, None)
-      response = Message(
-        self.node_name,
-        request.source_name,
-        payload=message.payload,
-        address=message.address,
-        transaction_id=request.transaction_id,
-        data_present=message.data_present,
-        resp_err=message.resp_err,
-        resp=Resp.I,
-        channel=Channel.DAT,
-        opcode=DatOpcode.COMP_DATA,
-      )
-      if request.opcode == ReqOpcode.READ_SHARED:
-        response.resp = Resp.SC
-        response.dbid = home_id
-        response.home_nid = self.node_name
-        self.pending_comp_acks[
-          (request.source_name, home_id)
-        ] = (message.address, message.resp_err, Resp.SC, home_id)
-      elif request.opcode == ReqOpcode.READ_UNIQUE:
-        response.resp = Resp.UC
-        response.dbid = home_id
-        response.home_nid = self.node_name
-        self.pending_comp_acks[
-          (request.source_name, home_id)
-        ] = (message.address, message.resp_err, Resp.UC, home_id)
-      self.ring.inject(response)
+      self._complete_read(home_id, message.payload, message.address, message.data_present, message.resp_err)
     elif (
-      message.channel == Channel.RSP
-      and message.opcode == RspOpcode.SNP_RESP
+      (message.channel == Channel.RSP and message.opcode == RspOpcode.SNP_RESP)
+      or (message.channel == Channel.DAT and message.opcode == DatOpcode.SNP_RESP_DATA)
     ):
       entry = self.pending_snoops[message.transaction_id]
+      if message.opcode == DatOpcode.SNP_RESP_DATA:
+        self.dirty_data[entry["address"]] = message.payload
       entry["awaiting"].discard(message.source_name)
       if not entry["awaiting"]:
         self.pending_snoops.pop(message.transaction_id)
@@ -626,6 +616,43 @@ class HomeWrapper(Endpoint):
     ):
       self.downstream_completions[message.transaction_id] = message
       self._finish_downstream_write(message.transaction_id)
+
+  def _complete_read(self, home_id, payload, address, data_present, resp_err):
+      request = self.pending_requests[home_id]
+      if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
+        self.pending_requests.pop(home_id)
+        busy = self.address_busy.get(request.address)
+        if busy is not None:
+          busy.discard(home_id)
+          if not busy:
+            self.address_busy.pop(request.address, None)
+      response = Message(
+        self.node_name,
+        request.source_name,
+        payload=payload,
+        address=address,
+        transaction_id=request.transaction_id,
+        data_present=data_present,
+        resp_err=resp_err,
+        resp=Resp.I,
+        channel=Channel.DAT,
+        opcode=DatOpcode.COMP_DATA,
+      )
+      if request.opcode == ReqOpcode.READ_SHARED:
+        response.resp = Resp.SC
+        response.dbid = home_id
+        response.home_nid = self.node_name
+        self.pending_comp_acks[
+          (request.source_name, home_id)
+        ] = (address, resp_err, Resp.SC, home_id)
+      elif request.opcode == ReqOpcode.READ_UNIQUE:
+        response.resp = Resp.UC
+        response.dbid = home_id
+        response.home_nid = self.node_name
+        self.pending_comp_acks[
+          (request.source_name, home_id)
+        ] = (address, resp_err, Resp.UC, home_id)
+      self.ring.inject(response)
     
 
 class StorageWrapper(Endpoint):
