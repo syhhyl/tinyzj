@@ -1,0 +1,4 @@
+# 同时发起请求，观察 HF 单事务槽背压
+write A hello cc0
+read B cc1
+step 40

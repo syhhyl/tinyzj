@@ -1,0 +1,4 @@
+# CC0 写入
+write A hello cc0
+# CC1 读取
+read A cc1

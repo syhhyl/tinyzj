@@ -1,0 +1,15 @@
+# 写入、两端共享读取、写失效、重新读回
+write A hello cc0
+step 20
+
+read A cc0
+step 12
+
+read A cc1
+step 30
+
+write A "new value" cc1
+step 40
+
+read A cc0
+step 20
