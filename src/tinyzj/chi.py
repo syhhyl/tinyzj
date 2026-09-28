@@ -18,6 +18,7 @@ class ReqOpcode:
   WRITE_NO_SNP_FULL = "WriteNoSnpFull"
   WRITE_NO_SNP_PTL = "WriteNoSnpPtl"
   ATOMIC_SWAP = "AtomicSwap"
+  ATOMIC_COMPARE = "AtomicCompare"
   WRITE_UNIQUE_FULL = "WriteUniqueFull"
   WRITE_BACK_FULL = "WriteBackFull"
   READ_SHARED = "ReadShared"

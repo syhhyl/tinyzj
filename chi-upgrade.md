@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- F2：新增行首 8-byte `atomic_compare(address, compare, replacement)`；比较成功更新并返回旧值，失败只返回旧值且不产生下游写。沿用原子地址锁、dirty snoop 和错误保留路径。依据 IHI0050 G B4.2 pp.211–212 与 B2.3.3 p.82；仍为受限行为 API，未扩展子行线上编码。新增双 RN 单赢家、比较不匹配、读错误、下游写错误及输入检查。
+
 - F1：实现受限 `atomic_swap(line_address, bytes8)`，只允许 64-byte 对齐地址的前 8 字节；HF 先失效持有者，按 DBIDResp→操作数→CompData 顺序在同一地址锁内读取旧行并更新前 8 字节，返回旧值。核对 IHI0050 G B2.3.3 p.82；数据值操作已建模，子行 Size/自然字节位置线上编码仍待 E 完善。111 测试通过，含两个 RN 竞争 dirty 行的线性顺序验证。不是完整 Atomic 功能覆盖。
 
 - G（阶段性证据）：新增固定种子的 byte-line scoreboard，3 种 DAT 宽度各 150 轮独占读、本地 store、copyback、Home eviction、随机部分写，共 2250 次组合操作，对比独立 bytes 参考值并检查收包表及错误表回收。110 测试通过。`chi-coverage.md` 列出已验证路径与明确缺口，F 与全量 G 验收尚未完成。
