@@ -69,6 +69,7 @@ class Socket(Endpoint):
     self.node_name = node_name
     self.home_name = home_name
     self._responses = {}
+    self.cache = {}
     self.pending_write_data = {}
     self.next_transaction_id = 0
 
@@ -79,6 +80,17 @@ class Socket(Endpoint):
       address=address,
       channel=Channel.REQ,
       opcode=ReqOpcode.READ_NO_SNP,
+    )
+
+  def read_shared(self, address):
+    if address is None:
+      raise ValueError("read request needs an address")
+    if address in self.cache:
+      return None
+    return self._send_request(
+      address=address,
+      channel=Channel.REQ,
+      opcode=ReqOpcode.READ_SHARED,
     )
 
   def write(self, address, data):
@@ -128,6 +140,18 @@ class Socket(Endpoint):
     ):
       key = (message.channel, message.opcode, message.transaction_id)
       self._responses[key] = message
+      if message.resp == Resp.SC:
+        if message.resp_err == RespErr.OK:
+          self.cache[message.address] = (Resp.SC, message.payload)
+        self.ring.inject(
+          Message(
+            self.node_name,
+            message.source_name,
+            transaction_id=message.transaction_id,
+            channel=Channel.RSP,
+            opcode=RspOpcode.COMP_ACK,
+          )
+        )
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.DBID_RESP
@@ -163,6 +187,8 @@ class HomeWrapper(Endpoint):
       if not isinstance(max_transactions, int) or max_transactions < 1:
         raise ValueError("max_transactions must be a positive integer")
     self.pending_requests = {}
+    self.pending_comp_acks = {}
+    self.directory = {}
     self.pending_write_data = {}
     self.next_home_id = 0
 
@@ -177,7 +203,7 @@ class HomeWrapper(Endpoint):
     super().receive(message)
     if (
       message.channel == Channel.REQ
-      and message.opcode == ReqOpcode.READ_NO_SNP
+      and message.opcode in (ReqOpcode.READ_NO_SNP, ReqOpcode.READ_SHARED)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
@@ -228,7 +254,21 @@ class HomeWrapper(Endpoint):
         channel=Channel.DAT,
         opcode=DatOpcode.COMP_DATA,
       )
+      if request.opcode == ReqOpcode.READ_SHARED:
+        response.resp = Resp.SC
+        self.pending_comp_acks[
+          (request.source_name, request.transaction_id)
+        ] = (message.address, message.resp_err)
       self.ring.inject(response)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.COMP_ACK
+    ):
+      address, resp_err = self.pending_comp_acks.pop(
+        (message.source_name, message.transaction_id)
+      )
+      if resp_err == RespErr.OK:
+        self.directory.setdefault(address, {})[message.source_name] = Resp.SC
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA

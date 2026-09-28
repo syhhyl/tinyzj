@@ -10,12 +10,14 @@ class ReqOpcode:
 
   READ_NO_SNP = "ReadNoSnp"
   WRITE_NO_SNP_FULL = "WriteNoSnpFull"
+  READ_SHARED = "ReadShared"
 
 
 class RspOpcode:
 
   COMP = "Comp"
   DBID_RESP = "DBIDResp"
+  COMP_ACK = "CompAck"
 
 
 class DatOpcode:
@@ -35,4 +37,5 @@ class RespErr:
 class Resp:
 
   UC = "UC"
+  SC = "SC"
   I = "I"

@@ -1,6 +1,13 @@
 import unittest
 
-from tinyzj.chi import Channel, DatOpcode, ReqOpcode, Resp, RespErr, RspOpcode
+from tinyzj.chi import (
+  Channel,
+  DatOpcode,
+  ReqOpcode,
+  Resp,
+  RespErr,
+  RspOpcode,
+)
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
 
@@ -359,6 +366,56 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual({}, zhujiang.hf.pending_requests)
     self.assertEqual({}, zhujiang.hf.pending_write_data)
     self.assertEqual({}, zhujiang.s.pending_writes)
+
+  def test_read_shared_caches_sc_and_registers_directory(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    request = zhujiang.cc0.read_shared("0x1000")
+
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc0.read_response_for(request)
+    self.assertEqual(Resp.SC, response.resp)
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc0.cache["0x1000"])
+    self.assertEqual({"n00": Resp.SC}, zhujiang.hf.directory["0x1000"])
+    comp_acks = [
+      message
+      for message in zhujiang.hf.received_messages
+      if message.opcode == RspOpcode.COMP_ACK
+    ]
+    self.assertEqual(1, len(comp_acks))
+    self.assertEqual(request.transaction_id, comp_acks[0].transaction_id)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_comp_acks)
+
+  def test_read_shared_hit_does_not_reach_the_network(self):
+    zhujiang = Zhujiang()
+    zhujiang.s.dj.write("0x1000", "value 1")
+    zhujiang.cc0.read_shared("0x1000")
+    zhujiang.run_until_idle()
+    hf_count = len(zhujiang.hf.received_messages)
+
+    hit = zhujiang.cc0.read_shared("0x1000")
+    steps = zhujiang.run_until_idle()
+
+    self.assertIsNone(hit)
+    self.assertEqual(0, steps)
+    self.assertEqual(hf_count, len(zhujiang.hf.received_messages))
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc0.cache["0x1000"])
+
+  def test_read_shared_error_address_completes_without_caching(self):
+    zhujiang = Zhujiang(error_addresses={"0x1000"})
+    request = zhujiang.cc0.read_shared("0x1000")
+
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc0.read_response_for(request)
+    self.assertEqual(RespErr.DERR, response.resp_err)
+    self.assertEqual({}, zhujiang.cc0.cache)
+    self.assertEqual({}, zhujiang.hf.directory)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_comp_acks)
+    self.assertEqual([], zhujiang.ring.in_flight)
 
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()
