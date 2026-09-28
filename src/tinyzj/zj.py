@@ -135,7 +135,7 @@ class Socket(Endpoint):
   def read_shared(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    if address in self.cache:
+    if address in self.cache and not self._address_pending(address):
       return None
     return self._send_request(
       address=address,
@@ -146,7 +146,7 @@ class Socket(Endpoint):
   def read_unique(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    if address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD):
+    if address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD) and not self._address_pending(address):
       return None
     return self._send_request(
       address=address,
@@ -155,9 +155,16 @@ class Socket(Endpoint):
     )
 
   def store_cached(self, address, data):
+    if self._address_pending(address):
+      raise ValueError("cached store requires prior local requests to complete")
     if address not in self.cache or self.cache[address][0] not in (Resp.UC, Resp.UD):
       raise ValueError("cached store requires unique ownership")
     self.cache[address] = (Resp.UD, data)
+
+  def _address_pending(self, address):
+    return any(request.address == address for request in self.active_requests.values()) or any(
+      request.address == address for request in self.waiting_requests
+    )
 
   def writeback(self, address):
     if address not in self.cache:
@@ -222,10 +229,12 @@ class Socket(Endpoint):
         self.ring.inject(retry)
         self.retry_requests.pop(txn_id)
         self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
-    while self.waiting_requests:
+    for request in list(self.waiting_requests):
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
-      request = self.waiting_requests.pop(0)
+      if any(active.address == request.address for active in self.active_requests.values()):
+        continue
+      self.waiting_requests.remove(request)
       txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
       request.transaction_id = txn_id
       self.active_requests[txn_id] = request

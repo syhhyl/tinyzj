@@ -6,6 +6,22 @@ from tinyzj.zj import Zhujiang
 
 class DirtyDataTest(unittest.TestCase):
 
+  def test_local_read_after_copyback_waits_and_refills(self):
+    system = Zhujiang(buffer_capacity=2, retry_enabled=True)
+    system.cc0.read_unique("A")
+    system.run_until_idle()
+    system.cc0.store_cached("A", "dirty")
+    wb = system.cc0.writeback("A")
+    request = system.cc0.read_unique("A")
+    self.assertIsNotNone(request)
+    self.assertIsNone(request.transaction_id)
+    with self.assertRaises(ValueError):
+      system.cc0.store_cached("A", "too early")
+    system.run_until_idle()
+    self.assertIsNotNone(system.cc0.write_response_for(wb))
+    self.assertEqual("dirty", system.cc0.read_response_for(request).payload)
+    self.assertEqual((Resp.UC, "dirty"), system.cc0.cache["A"])
+
   def test_writeback_and_snoop_races_preserve_latest_value(self):
     for unique in (False, True):
       for writeback_first in (False, True):
