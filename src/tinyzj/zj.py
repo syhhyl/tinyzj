@@ -242,6 +242,38 @@ class HomeWrapper(Endpoint):
     self.pending_snoops = {}
     self.pending_write_data = {}
     self.next_home_id = 0
+    self.next_downstream_id = 0
+    self.downstream_requests = {}
+    self.next_dbid = 0
+    self.write_dbids = {}
+    self.next_snoop_id = 0
+
+  def _send_write_dbid(self, home_id):
+    request = self.pending_requests[home_id]
+    dbid = self.next_dbid
+    self.next_dbid += 1
+    self.write_dbids[dbid] = home_id
+    self.ring.inject(Message(
+      self.node_name,
+      request.source_name,
+      transaction_id=request.transaction_id,
+      dbid=dbid,
+      channel=Channel.RSP,
+      opcode=RspOpcode.DBID_RESP,
+    ))
+
+  def _send_storage_request(self, home_id, opcode):
+    downstream_id = self.next_downstream_id
+    self.next_downstream_id += 1
+    self.downstream_requests[downstream_id] = home_id
+    self.ring.inject(Message(
+      self.node_name,
+      self.storage_name,
+      address=self.pending_requests[home_id].address,
+      transaction_id=downstream_id,
+      channel=Channel.REQ,
+      opcode=opcode,
+    ))
 
   def can_receive(self, message):
     if message.channel != Channel.REQ:
@@ -271,7 +303,10 @@ class HomeWrapper(Endpoint):
         ReqOpcode.READ_UNIQUE: SnpOpcode.SNP_UNIQUE,
       }.get(message.opcode)
       if snoop_opcode and holders:
-        self.pending_snoops[home_id] = {
+        snoop_id = self.next_snoop_id
+        self.next_snoop_id += 1
+        self.pending_snoops[snoop_id] = {
+          "home_id": home_id,
           "address": message.address,
           "awaiting": holders,
           "kind": "read",
@@ -286,7 +321,7 @@ class HomeWrapper(Endpoint):
               self.node_name,
               holder_name,
               address=message.address,
-              transaction_id=home_id,
+              transaction_id=snoop_id,
               channel=Channel.SNP,
               opcode=snoop_opcode,
             )
@@ -294,15 +329,7 @@ class HomeWrapper(Endpoint):
         if not self.directory[message.address]:
           del self.directory[message.address]
       else:
-        storage_request = Message(
-          self.node_name,
-          self.storage_name,
-          address=message.address,
-          transaction_id=home_id,
-          channel=Channel.REQ,
-          opcode=ReqOpcode.READ_NO_SNP,
-        )
-        self.ring.inject(storage_request)
+        self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
@@ -315,11 +342,13 @@ class HomeWrapper(Endpoint):
       self.address_busy.setdefault(message.address, set()).add(home_id)
       holders = set(self.directory.get(message.address, {}))
       if holders:
-        self.pending_snoops[home_id] = {
+        snoop_id = self.next_snoop_id
+        self.next_snoop_id += 1
+        self.pending_snoops[snoop_id] = {
+          "home_id": home_id,
           "address": message.address,
           "awaiting": holders,
           "kind": "write",
-          "request": message,
         }
         for holder_name in holders:
           self.directory.get(message.address, {}).pop(holder_name, None)
@@ -328,7 +357,7 @@ class HomeWrapper(Endpoint):
               self.node_name,
               holder_name,
               address=message.address,
-              transaction_id=home_id,
+              transaction_id=snoop_id,
               channel=Channel.SNP,
               opcode=SnpOpcode.SNP_UNIQUE,
             )
@@ -336,25 +365,18 @@ class HomeWrapper(Endpoint):
         if message.address in self.directory and not self.directory[message.address]:
           del self.directory[message.address]
       else:
-        dbid_response = Message(
-          self.node_name,
-          message.source_name,
-          transaction_id=message.transaction_id,
-          dbid=home_id,
-          channel=Channel.RSP,
-          opcode=RspOpcode.DBID_RESP,
-        )
-        self.ring.inject(dbid_response)
+        self._send_write_dbid(home_id)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
     ):
-      request = self.pending_requests[message.transaction_id]
+      home_id = self.downstream_requests.pop(message.transaction_id)
+      request = self.pending_requests[home_id]
       if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
-        self.pending_requests.pop(message.transaction_id)
+        self.pending_requests.pop(home_id)
         busy = self.address_busy.get(request.address)
         if busy is not None:
-          busy.discard(message.transaction_id)
+          busy.discard(home_id)
           if not busy:
             self.address_busy.pop(request.address, None)
       response = Message(
@@ -373,12 +395,12 @@ class HomeWrapper(Endpoint):
         response.resp = Resp.SC
         self.pending_comp_acks[
           (request.source_name, request.transaction_id)
-        ] = (message.address, message.resp_err, Resp.SC, message.transaction_id)
+        ] = (message.address, message.resp_err, Resp.SC, home_id)
       elif request.opcode == ReqOpcode.READ_UNIQUE:
         response.resp = Resp.UC
         self.pending_comp_acks[
           (request.source_name, request.transaction_id)
-        ] = (message.address, message.resp_err, Resp.UC, message.transaction_id)
+        ] = (message.address, message.resp_err, Resp.UC, home_id)
       self.ring.inject(response)
     elif (
       message.channel == Channel.RSP
@@ -389,25 +411,9 @@ class HomeWrapper(Endpoint):
       if not entry["awaiting"]:
         self.pending_snoops.pop(message.transaction_id)
         if entry["kind"] == "write":
-          dbid_response = Message(
-            self.node_name,
-            entry["request"].source_name,
-            transaction_id=entry["request"].transaction_id,
-            dbid=message.transaction_id,
-            channel=Channel.RSP,
-            opcode=RspOpcode.DBID_RESP,
-          )
-          self.ring.inject(dbid_response)
+          self._send_write_dbid(entry["home_id"])
         else:
-          storage_request = Message(
-            self.node_name,
-            self.storage_name,
-            address=entry["address"],
-            transaction_id=message.transaction_id,
-            channel=Channel.REQ,
-            opcode=ReqOpcode.READ_NO_SNP,
-          )
-          self.ring.inject(storage_request)
+          self._send_storage_request(entry["home_id"], ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP_ACK
@@ -427,17 +433,9 @@ class HomeWrapper(Endpoint):
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
     ):
-      request = self.pending_requests[message.transaction_id]
-      self.pending_write_data[message.transaction_id] = message.payload
-      storage_request = Message(
-        self.node_name,
-        self.storage_name,
-        address=request.address,
-        transaction_id=message.transaction_id,
-        channel=Channel.REQ,
-        opcode=ReqOpcode.WRITE_NO_SNP_FULL,
-      )
-      self.ring.inject(storage_request)
+      home_id = self.write_dbids.pop(message.transaction_id)
+      self.pending_write_data[home_id] = message.payload
+      self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.DBID_RESP
@@ -445,7 +443,7 @@ class HomeWrapper(Endpoint):
       write_data = Message(
         self.node_name,
         message.source_name,
-        payload=self.pending_write_data[message.transaction_id],
+        payload=self.pending_write_data[self.downstream_requests[message.transaction_id]],
         transaction_id=message.dbid,
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
@@ -455,11 +453,12 @@ class HomeWrapper(Endpoint):
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP
     ):
-      request = self.pending_requests.pop(message.transaction_id)
-      self.pending_write_data.pop(message.transaction_id)
+      home_id = self.downstream_requests.pop(message.transaction_id)
+      request = self.pending_requests.pop(home_id)
+      self.pending_write_data.pop(home_id)
       busy = self.address_busy.get(request.address)
       if busy is not None:
-        busy.discard(message.transaction_id)
+        busy.discard(home_id)
         if not busy:
           self.address_busy.pop(request.address, None)
       response = Message(

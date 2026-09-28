@@ -223,7 +223,11 @@ class ZhujiangTest(unittest.TestCase):
     self.assertIsNone(storage_data.address)
     self.assertEqual("value 1", storage_data.payload)
     self.assertEqual(request.transaction_id, dbid_response.transaction_id)
-    self.assertEqual(dbid_response.dbid, storage_request.transaction_id)
+    storage_completion = next(
+      message for message in zhujiang.hf.received_messages
+      if message.source_name == "n10" and message.opcode == RspOpcode.COMP
+    )
+    self.assertEqual(storage_request.transaction_id, storage_completion.transaction_id)
     self.assertEqual("n01", response.source_name)
     self.assertEqual("n00", response.target_name)
     self.assertEqual(request.transaction_id, response.transaction_id)
@@ -679,6 +683,7 @@ class ZhujiangTest(unittest.TestCase):
 
   def test_home_dbid_is_distinct_from_each_ccs_txnid(self):
     zhujiang = Zhujiang()
+    zhujiang.hf.next_dbid = 50
     zhujiang.cc0.read("0x1000")
     request = zhujiang.cc1.write("0x2000", "value 2")
 
@@ -691,7 +696,7 @@ class ZhujiangTest(unittest.TestCase):
     ][0]
     self.assertEqual(0, request.transaction_id)
     self.assertEqual(0, dbid_response.transaction_id)
-    self.assertEqual(1, dbid_response.dbid)
+    self.assertEqual(50, dbid_response.dbid)
 
   def test_transaction_tables_are_empty_after_concurrent_transactions(self):
     zhujiang = Zhujiang()
