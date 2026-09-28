@@ -6,6 +6,36 @@ from tinyzj.zj import Zhujiang
 
 class DownstreamIDTest(unittest.TestCase):
 
+  def test_comp_ack_uses_home_dbid_instead_of_requester_txnid(self):
+    for error in (False, True):
+      with self.subTest(error=error):
+        system = Zhujiang(error_addresses=["A"] if error else [])
+        system.hf.next_home_id = 100
+        request = system.cc0.read_shared("A")
+        self.assertTrue(request.exp_comp_ack)
+        for _ in range(100):
+          system.step()
+          response = system.cc0.read_response_for(request)
+          if response is not None:
+            break
+        self.assertIsNotNone(response)
+        self.assertEqual(0, response.transaction_id)
+        self.assertEqual(100, response.dbid)
+        self.assertEqual("n01", response.home_nid)
+        self.assertIn(("n00", 100), system.hf.pending_comp_acks)
+        self.assertIn(100, system.hf.pending_requests)
+        ack = system.cc0.pending_acks[0]
+        self.assertEqual(100, ack.transaction_id)
+        self.assertEqual(response.home_nid, ack.target_name)
+        system.run_until_idle()
+        self.assertFalse(system.hf.pending_comp_acks)
+        self.assertFalse(system.hf.pending_requests)
+        self.assertFalse(system.cc0.pending_acks)
+        ordinary = system.cc0.read("B")
+        self.assertFalse(ordinary.exp_comp_ack)
+        system.run_until_idle()
+        self.assertIsNone(system.cc0.read_response_for(ordinary).dbid)
+
   def test_requester_reuse_preserves_response_history_and_waits_for_ack(self):
     system = Zhujiang(buffer_capacity=2, id_capacity=1)
     system.s.dj.write("A", "first")

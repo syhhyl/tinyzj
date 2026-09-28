@@ -45,6 +45,10 @@
 
 ## 执行记录
 
+- B 拆为 B1 现有读路径字段关联、B2 完成状态机及 RN 释放条件、B3 合法响应组合与重排。B1 已实现：REQ 显式携带 `exp_comp_ack`（当前共享/独占读为 True）；CompData 携带 HomeNID 和以内部 home_id 为令牌的 DBID；RN 依据原请求的 ExpCompAck 发确认，CompAck 的目标为 HomeNID、TxnID 为返回的 DBID。HF 按 `(RN源节点, DBID)` 释放读事务。普通读保持不要求确认。
+- B1 参考：Arm 官方《AMBA 5 CHI Architecture Specification》（2017 公开版本），Transaction identifier fields 2-73、Transaction structure 2-39、Ordering 2-63；URL https://documentation-service.arm.com/static/5f914e1cf86e16515cdc2b3b 。官方字段说明明确 HomeNID 为 CompAck 目标、DBID 为响应采用的 TxnID。此处核对的是已有读路径通用关联，不代表已完成 CHI-G 全部版本差异审计。CHI-G 的准确 issue/字段合法组合以及其他 opcode 的 ExpCompAck 约束仍需在扩展时核对。
+- B1 测试覆盖 RN TxnID=0 与 Home DBID=100、正常/错误读均确认、HF 确认前持有资源、普通读不确认；RN 暂时保留 A3b 的保守交付后复用策略，B2 再完善。
+
 - A3b 已完成：`id_capacity` 同时应用于各 RN 的 TxnID 空间。RN 用请求对象保存等待队列及未注入写数据，只有分配到 TxnID 才入环；响应历史按 `(channel, opcode, request对象)` 保存，重复编号不会覆盖旧请求结果。普通读/写在完成响应后释放；一致性读保守地等其 CompAck 从网络交付后释放。`Zhujiang.step()` 在环步进后推进 RN 队列，`run_until_idle()` 同时检查 RN 待处理状态。
 - CompAck 的交付观察是当前 Python 模型的调度机制，不是新增 CHI 返回消息或真实硬件可见确认信号；阶段 B 需对照规范完善 CompAck 标识与 RN 的协议级释放条件。直接驱动 `ring.step()` 不代替系统级 RN 调度，应使用 `Zhujiang.step()`。
 - A3b 验收：容量 1 下跨请求保留历史响应、CompAck 前禁止复用、排队写数据与错误响应不串事务；压力矩阵同时覆盖 ID 容量 1/2/3/无限。82 个测试通过。下一步 B 规范核对及完成状态机。

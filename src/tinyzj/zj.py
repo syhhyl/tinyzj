@@ -170,6 +170,7 @@ class Socket(Endpoint):
       address=address,
       channel=channel,
       opcode=opcode,
+      exp_comp_ack=opcode in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE),
     )
     self.waiting_requests.append(request)
     self.advance_requests()
@@ -214,13 +215,13 @@ class Socket(Endpoint):
       request = self.active_requests[message.transaction_id]
       key = (message.channel, message.opcode, request)
       self._responses[key] = message
-      if message.resp in (Resp.SC, Resp.UC):
+      if request.exp_comp_ack:
         if message.resp_err == RespErr.OK:
           self.cache[message.address] = (message.resp, message.payload)
         ack = Message(
           self.node_name,
-          message.source_name,
-          transaction_id=message.transaction_id,
+          message.home_nid,
+          transaction_id=message.dbid,
           channel=Channel.RSP,
           opcode=RspOpcode.COMP_ACK,
         )
@@ -449,13 +450,17 @@ class HomeWrapper(Endpoint):
       )
       if request.opcode == ReqOpcode.READ_SHARED:
         response.resp = Resp.SC
+        response.dbid = home_id
+        response.home_nid = self.node_name
         self.pending_comp_acks[
-          (request.source_name, request.transaction_id)
+          (request.source_name, home_id)
         ] = (message.address, message.resp_err, Resp.SC, home_id)
       elif request.opcode == ReqOpcode.READ_UNIQUE:
         response.resp = Resp.UC
+        response.dbid = home_id
+        response.home_nid = self.node_name
         self.pending_comp_acks[
-          (request.source_name, request.transaction_id)
+          (request.source_name, home_id)
         ] = (message.address, message.resp_err, Resp.UC, home_id)
       self.ring.inject(response)
     elif (
