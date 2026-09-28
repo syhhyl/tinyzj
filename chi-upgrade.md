@@ -45,6 +45,9 @@
 
 ## 执行记录
 
+- F5：非 snoopable exclusive 使用 ReadNoSnp/WriteNoSnp 的 Excl、LPID（当前 API 单 LPID=0），Home 保存 `(RN, LPID)→地址` monitor；成功写清除同地址 monitor，exclusive store 失败返回 OK 且不写入，成功返回 EXOK。依据 IHI0050 G B6.2.4/B6.3 pp.314–315。覆盖竞争写干扰及两个 monitor 只允许一个 store 成功；snoopable LP/PoC monitor 尚未实现。
+- F6：DVM 行为子集提供 invalidate(page/all) 与 sync；REQ/DBIDResp/NonCopyBackWriteData 后向两个 RN 发送每目标两段 SnpDVMOp，收齐两段后修改教学 TLB 并只回一次 SnpResp，Home 收齐全部响应后 Comp。所有 DVM 用同一内部地址令牌串行化，Sync 因此前序操作全部完成。依据 IHI0050 G B2.3.6 pp.88–89、B2.3.9.8 p.97。126 测试通过。操作参数是 Python 元数据，尚未实现 DVM 地址位编码、VMID/ASID、异常级和指令缓存维护。
+
 - F4：新增 CleanInvalid/CleanShared API 与对应 snoop。Home 等待全部 snoop 数据后把 dirty 行刷入 S，Comp 成功前保留 dirty 数据；错误返回 NDERR 并保留可恢复副本。CleanShared 选择规范允许的 SC 终态，CleanInvalid 失效全部持有者。依据 IHI0050 G B4.8.1.4 pp.256–257 与请求/snoop 对应表。122 测试通过，覆盖无副本、dirty、写错误和保留共享缓存；尚未实现持久化/同步维护扩展。
 
 - F3 验收：119 测试和三个示例通过。另修复 AtomicLoad/Swap/Compare 的 CompData 先于 DBIDResp 时过早回收 RN ID/操作数问题；只有返回数据收齐和操作数提交都完成才发布结果，增加人工响应重排测试（B2.3.3 允许先回 CompData）。

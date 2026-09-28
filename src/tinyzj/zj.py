@@ -20,6 +20,7 @@ MAINTENANCE_OPCODES = (ReqOpcode.CLEAN_INVALID, ReqOpcode.CLEAN_SHARED)
 WRITE_DATA_OPCODES = (
   ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL,
   ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL,
+  ReqOpcode.DVM_OP,
 ) + ATOMIC_OPCODES
 
 
@@ -144,6 +145,8 @@ class Socket(Endpoint):
     self.home_name = home_name
     self._responses = {}
     self.cache = {}
+    self.tlb = {}
+    self.dvm_parts = {}
     self.pending_write_data = {}
     self.next_transaction_id = 0
 
@@ -208,8 +211,24 @@ class Socket(Endpoint):
       raise ValueError("maintenance requires an address")
     return self._send_request(address, Channel.REQ, ReqOpcode.CLEAN_SHARED)
 
+  def dvm_invalidate(self, page=None):
+    return self._write(("dvm",), ("invalidate", page), ReqOpcode.DVM_OP)
+
+  def dvm_sync(self):
+    return self._write(("dvm",), ("sync", None), ReqOpcode.DVM_OP)
+
   def write_no_snp(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
+
+  def read_exclusive_no_snp(self, address):
+    request = self.read(address)
+    request.excl = True
+    return request
+
+  def write_exclusive_no_snp(self, address, data):
+    request = self.write_no_snp(address, data)
+    request.excl = True
+    return request
 
   def atomic_swap(self, address, value):
     return self._atomic_request(address, value, ReqOpcode.ATOMIC_SWAP)
@@ -353,6 +372,26 @@ class Socket(Endpoint):
     message = super().receive(message)
     if message is None:
       return
+    if message.channel == Channel.SNP and message.opcode == SnpOpcode.SNP_DVM_OP:
+      part, operation, page = message.payload
+      key = (message.source_name, message.transaction_id)
+      parts = self.dvm_parts.setdefault(key, {})
+      if part in parts or part not in (0, 1):
+        raise ValueError("invalid or duplicate DVM snoop part")
+      parts[part] = (operation, page)
+      if len(parts) == 2:
+        if parts[0] != parts[1]:
+          raise ValueError("inconsistent DVM snoop parts")
+        self.dvm_parts.pop(key)
+        if operation == "invalidate":
+          if page is None:
+            self.tlb.clear()
+          else:
+            self.tlb.pop(page, None)
+        self.send(Message(self.node_name, message.source_name,
+                          transaction_id=message.transaction_id,
+                          channel=Channel.RSP, opcode=RspOpcode.SNP_RESP, resp=Resp.I))
+      return
     if message.channel == Channel.RSP and message.opcode == RspOpcode.RETRY_ACK:
       self.retry_requests[message.transaction_id] = (message.source_name, message.pcrd_type)
       self.request_states[self.active_requests[message.transaction_id]] = "await_credit"
@@ -495,6 +534,7 @@ class HomeWrapper(Endpoint):
     self.next_home_id = 0
     self.pending_write_errors = {}
     self.atomic_results = {}
+    self.exclusive_monitors = {}
     self.next_downstream_id = 0
     self.downstream_requests = {}
     self.next_dbid = 0
@@ -535,6 +575,9 @@ class HomeWrapper(Endpoint):
     request = self.pending_requests.pop(home_id)
     self.pending_write_data.pop(home_id)
     self.pending_write_errors.pop(home_id, None)
+    if completion.resp_err == RespErr.OK:
+      self.exclusive_monitors = {key: address for key, address in self.exclusive_monitors.items()
+                                 if address != request.address}
     if request.opcode in ATOMIC_OPCODES:
       old = self.atomic_results.pop(home_id)
       if completion.resp_err == RespErr.OK:
@@ -562,7 +605,7 @@ class HomeWrapper(Endpoint):
       self.node_name,
       request.source_name,
       transaction_id=request.transaction_id,
-      resp_err=completion.resp_err,
+      resp_err=RespErr.EXOK if request.excl and completion.resp_err == RespErr.OK else completion.resp_err,
       channel=Channel.RSP,
       opcode=RspOpcode.COMP,
     ))
@@ -768,6 +811,11 @@ class HomeWrapper(Endpoint):
           self._send_write_dbid(entry["home_id"])
         elif entry["kind"] == "maintenance":
           self._complete_maintenance(entry["home_id"])
+        elif entry["kind"] == "dvm":
+          home_id = entry["home_id"]
+          self.pending_write_data.pop(home_id)
+          self.pending_write_errors.pop(home_id, None)
+          self._complete_maintenance(home_id)
         else:
           self._send_storage_request(entry["home_id"], ReqOpcode.READ_NO_SNP)
     elif (
@@ -809,6 +857,29 @@ class HomeWrapper(Endpoint):
       self.pending_write_data[home_id] = message.payload
       self.pending_write_errors[home_id] = message.resp_err
       request = self.pending_requests[home_id]
+      if request.opcode == ReqOpcode.DVM_OP:
+        operation, page = message.payload
+        snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
+        targets = {node.name for node in self.ring.nodes if node.role.startswith("CC")}
+        self.pending_snoops[snoop_id] = {"home_id": home_id, "address": request.address,
+                                        "awaiting": targets, "kind": "dvm"}
+        for target in sorted(targets):
+          for part in (0, 1):
+            self.send(Message(self.node_name, target, transaction_id=snoop_id,
+                              payload=(part, operation, page), channel=Channel.SNP,
+                              opcode=SnpOpcode.SNP_DVM_OP))
+        return
+      if request.excl:
+        key = (request.source_name, request.lpid)
+        success = self.exclusive_monitors.pop(key, None) == request.address
+        if not success:
+          self.pending_requests.pop(home_id)
+          self.pending_write_data.pop(home_id)
+          self.pending_write_errors.pop(home_id, None)
+          self.address_busy.pop(request.address)
+          self.send(Message(self.node_name, request.source_name, transaction_id=request.transaction_id,
+                            channel=Channel.RSP, opcode=RspOpcode.COMP, resp_err=RespErr.OK))
+          return
       if request.opcode in ATOMIC_OPCODES:
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
         return
@@ -844,6 +915,9 @@ class HomeWrapper(Endpoint):
 
   def _complete_read(self, home_id, payload, address, data_present, resp_err):
       request = self.pending_requests[home_id]
+      if request.excl and request.opcode == ReqOpcode.READ_NO_SNP and resp_err == RespErr.OK:
+        self.exclusive_monitors[(request.source_name, request.lpid)] = address
+        resp_err = RespErr.EXOK
       if request.opcode in ATOMIC_OPCODES:
         operand_error = self.pending_write_errors.get(home_id, RespErr.OK)
         if resp_err != RespErr.OK or operand_error != RespErr.OK or not isinstance(payload, bytes) or len(payload) != 64:

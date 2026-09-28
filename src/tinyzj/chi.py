@@ -12,6 +12,7 @@ class SnpOpcode:
   SNP_UNIQUE = "SnpUnique"
   SNP_CLEAN_INVALID = "SnpCleanInvalid"
   SNP_CLEAN_SHARED = "SnpCleanShared"
+  SNP_DVM_OP = "SnpDVMOp"
 
 
 class ReqOpcode:
@@ -27,6 +28,7 @@ class ReqOpcode:
   READ_UNIQUE = "ReadUnique"
   CLEAN_INVALID = "CleanInvalid"
   CLEAN_SHARED = "CleanShared"
+  DVM_OP = "DVMOp"
 
 
 class RspOpcode:

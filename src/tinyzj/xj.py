@@ -37,6 +37,8 @@ class Message:
     data_check=None,
     size=None,
     byte_offset=0,
+    excl=False,
+    lpid=0,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -67,6 +69,8 @@ class Message:
     self.data_check = data_check
     self.size = size
     self.byte_offset = byte_offset
+    self.excl = excl
+    self.lpid = lpid
 
 class Injection:
 
