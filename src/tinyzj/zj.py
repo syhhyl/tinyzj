@@ -16,6 +16,7 @@ from .atomic import OPERATIONS, LOAD_OPCODES, STORE_OPCODES, calculate
 
 
 ATOMIC_OPCODES = (ReqOpcode.ATOMIC_SWAP, ReqOpcode.ATOMIC_COMPARE) + LOAD_OPCODES + STORE_OPCODES
+MAINTENANCE_OPCODES = (ReqOpcode.CLEAN_INVALID, ReqOpcode.CLEAN_SHARED)
 WRITE_DATA_OPCODES = (
   ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL,
   ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL,
@@ -196,6 +197,16 @@ class Socket(Endpoint):
 
   def write(self, address, data):
     return self.write_unique(address, data)
+
+  def clean_invalid(self, address):
+    if address is None:
+      raise ValueError("maintenance requires an address")
+    return self._send_request(address, Channel.REQ, ReqOpcode.CLEAN_INVALID)
+
+  def clean_shared(self, address):
+    if address is None:
+      raise ValueError("maintenance requires an address")
+    return self._send_request(address, Channel.REQ, ReqOpcode.CLEAN_SHARED)
 
   def write_no_snp(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
@@ -380,7 +391,7 @@ class Socket(Endpoint):
         self.write_data_sent.discard(message.transaction_id)
     elif (
       message.channel == Channel.SNP
-      and message.opcode == SnpOpcode.SNP_SHARED
+      and message.opcode in (SnpOpcode.SNP_SHARED, SnpOpcode.SNP_CLEAN_SHARED)
     ):
       dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
       payload = self.cache[message.address][1] if dirty else None
@@ -401,7 +412,7 @@ class Socket(Endpoint):
       )
     elif (
       message.channel == Channel.SNP
-      and message.opcode == SnpOpcode.SNP_UNIQUE
+      and message.opcode in (SnpOpcode.SNP_UNIQUE, SnpOpcode.SNP_CLEAN_INVALID)
     ):
       dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
       payload = self.cache[message.address][1] if dirty else None
@@ -449,6 +460,12 @@ class Socket(Endpoint):
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP
     ):
+      request = self.active_requests[message.transaction_id]
+      if request.opcode in MAINTENANCE_OPCODES:
+        self.active_requests.pop(message.transaction_id)
+        self._responses[(Channel.RSP, RspOpcode.COMP, request)] = message
+        self.request_states[request] = "complete"
+        return
       self.write_completions[message.transaction_id] = message
       self._finish_write(message.transaction_id)
 
@@ -526,7 +543,7 @@ class HomeWrapper(Endpoint):
       self.address_busy.pop(request.address)
       self._send_atomic_result(request, old, completion.resp_err)
       return
-    if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
+    if completion.resp_err == RespErr.OK and request.opcode in (ReqOpcode.WRITE_UNIQUE_FULL,) + MAINTENANCE_OPCODES:
       self.dirty_data.pop(request.address, None)
       self.dirty_errors.pop(request.address, None)
     busy = self.address_busy.get(request.address)
@@ -570,6 +587,19 @@ class HomeWrapper(Endpoint):
       channel=Channel.RSP,
       opcode=RspOpcode.COMP_DBID_RESP if request.opcode == ReqOpcode.WRITE_BACK_FULL else RspOpcode.DBID_RESP,
     ))
+
+  def _complete_maintenance(self, home_id):
+    request = self.pending_requests[home_id]
+    if request.address in self.dirty_data:
+      self.pending_write_data[home_id] = self.dirty_data[request.address]
+      self.pending_write_errors[home_id] = self.dirty_errors.get(request.address, RespErr.OK)
+      self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
+      return
+    self.pending_requests.pop(home_id)
+    self.address_busy.pop(request.address)
+    self.send(Message(self.node_name, request.source_name,
+                      transaction_id=request.transaction_id, channel=Channel.RSP,
+                      opcode=RspOpcode.COMP))
 
   def _send_storage_request(self, home_id, opcode):
     request = self.pending_requests[home_id]
@@ -678,24 +708,27 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode in WRITE_DATA_OPCODES
+      and message.opcode in WRITE_DATA_OPCODES + MAINTENANCE_OPCODES
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
       home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
-      holders = set(self.directory.get(message.address, {})) if message.opcode in (ReqOpcode.WRITE_UNIQUE_FULL,) + ATOMIC_OPCODES else set()
+      holders = set(self.directory.get(message.address, {})) if message.opcode in (ReqOpcode.WRITE_UNIQUE_FULL,) + MAINTENANCE_OPCODES + ATOMIC_OPCODES else set()
       if holders:
         snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
           "home_id": home_id,
           "address": message.address,
           "awaiting": holders,
-          "kind": "write",
+          "kind": "maintenance" if message.opcode in MAINTENANCE_OPCODES else "write",
         }
         for holder_name in holders:
-          self.directory.get(message.address, {}).pop(holder_name, None)
+          if message.opcode == ReqOpcode.CLEAN_SHARED:
+            self.directory[message.address][holder_name] = Resp.SC
+          else:
+            self.directory.get(message.address, {}).pop(holder_name, None)
           self.ring.inject(
             Message(
               self.node_name,
@@ -703,13 +736,17 @@ class HomeWrapper(Endpoint):
               address=message.address,
               transaction_id=snoop_id,
               channel=Channel.SNP,
-              opcode=SnpOpcode.SNP_UNIQUE,
+              opcode={ReqOpcode.CLEAN_INVALID: SnpOpcode.SNP_CLEAN_INVALID,
+                      ReqOpcode.CLEAN_SHARED: SnpOpcode.SNP_CLEAN_SHARED}.get(message.opcode, SnpOpcode.SNP_UNIQUE),
             )
           )
         if message.address in self.directory and not self.directory[message.address]:
           del self.directory[message.address]
       else:
-        self._send_write_dbid(home_id)
+        if message.opcode in MAINTENANCE_OPCODES:
+          self._complete_maintenance(home_id)
+        else:
+          self._send_write_dbid(home_id)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.COMP_DATA
@@ -729,6 +766,8 @@ class HomeWrapper(Endpoint):
         self.pending_snoops.pop(message.transaction_id)
         if entry["kind"] == "write":
           self._send_write_dbid(entry["home_id"])
+        elif entry["kind"] == "maintenance":
+          self._complete_maintenance(entry["home_id"])
         else:
           self._send_storage_request(entry["home_id"], ReqOpcode.READ_NO_SNP)
     elif (

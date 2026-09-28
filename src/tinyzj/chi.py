@@ -10,6 +10,8 @@ class SnpOpcode:
 
   SNP_SHARED = "SnpShared"
   SNP_UNIQUE = "SnpUnique"
+  SNP_CLEAN_INVALID = "SnpCleanInvalid"
+  SNP_CLEAN_SHARED = "SnpCleanShared"
 
 
 class ReqOpcode:
@@ -23,6 +25,8 @@ class ReqOpcode:
   WRITE_BACK_FULL = "WriteBackFull"
   READ_SHARED = "ReadShared"
   READ_UNIQUE = "ReadUnique"
+  CLEAN_INVALID = "CleanInvalid"
+  CLEAN_SHARED = "CleanShared"
 
 
 class RspOpcode:

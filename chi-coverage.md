@@ -16,7 +16,7 @@
 | 错误 | RespErr、Poison→DERR、奇字节校验；`test_data.py` | 持久 Poison 存储、所有 snoop/error 状态组合 |
 | Atomic | 自然对齐 AtomicSwap/Compare、八种 AtomicLoad/Store；1/2/4/8-byte，Compare 另支持16-byte；HF 行锁、signed/unsigned、并发 fetch-add、提前 CompData；`test_atomic.py` | 子行线上字节位置、Endian 字段 |
 | Exclusive | 未实现 | monitor、成功/失败与失效关联 |
-| Cache maintenance | 未实现 | Clean/Invalidate/同步完成与持久化 |
+| Cache maintenance | CleanInvalid/CleanShared 与对应 snoop，dirty 刷入 S 后完成；`test_maintenance.py` | MakeInvalid、同步完成与持久化扩展 |
 | DVM | 未实现 | 广播、同步与完成序列 |
 | 系统验证 | 确定性混合压力和 byte-line scoreboard | 完整协议断言、所有必选条目审计 |
 

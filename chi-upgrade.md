@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- F4：新增 CleanInvalid/CleanShared API 与对应 snoop。Home 等待全部 snoop 数据后把 dirty 行刷入 S，Comp 成功前保留 dirty 数据；错误返回 NDERR 并保留可恢复副本。CleanShared 选择规范允许的 SC 终态，CleanInvalid 失效全部持有者。依据 IHI0050 G B4.8.1.4 pp.256–257 与请求/snoop 对应表。122 测试通过，覆盖无副本、dirty、写错误和保留共享缓存；尚未实现持久化/同步维护扩展。
+
 - F3 验收：119 测试和三个示例通过。另修复 AtomicLoad/Swap/Compare 的 CompData 先于 DBIDResp 时过早回收 RN ID/操作数问题；只有返回数据收齐和操作数提交都完成才发布结果，增加人工响应重排测试（B2.3.3 允许先回 CompData）。
 
 - F3/E6：实现 AtomicLoad/AtomicStore 的 ADD/CLR/EOR/SET/SMAX/SMIN/UMAX/UMIN，明确 little-endian 整数计算、截断溢出、signed 比较以及 CompData/Comp 不同完成通道。原子 API 支持自然对齐的 1/2/4/8-byte 操作，Compare 另支持 16-byte 值；内部地址按 64-byte 行归一化，保留 byte_offset 与 Size（Compare 为两个操作数总长）。依据 IHI0050 G B4.2 pp.210–212 与 B2.8.6 pp.162–163。增加运算边界向量、40 次双 RN fetch-add 线性化、行尾 offset/size 组合验证。仍未编码子行 DAT 自然字节位置和 Endian 字段，不声明完整原子线上合规。
