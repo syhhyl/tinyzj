@@ -8,6 +8,53 @@ from tinyzj.zj import Zhujiang
 
 class DataTest(unittest.TestCase):
 
+  def test_corrupted_write_packet_does_not_modify_memory(self):
+    system = Zhujiang(id_capacity=1, buffer_capacity=2)
+    system.s.dj.write("A", bytes(64))
+    request = system.cc0.write("A", bytes([1]) * 64)
+    corrupted = False
+    for _ in range(500):
+      for injection in system.ring.in_flight:
+        message = injection.message
+        if not corrupted and message.source_name == "n00" and message.channel == Channel.DAT:
+          message.resp_err = RespErr.DERR
+          corrupted = True
+      system.step()
+      if system.cc0.write_response_for(request) is not None:
+        break
+    self.assertTrue(corrupted)
+    self.assertEqual(RespErr.NDERR, system.cc0.write_response_for(request).resp_err)
+    self.assertEqual(bytes(64), system.s.dj.data_by_address["A"])
+    self.assertFalse(system.hf.pending_write_errors)
+
+  def test_read_id_and_ack_wait_for_last_packet(self):
+    system = Zhujiang(id_capacity=1)
+    request = system.cc0.read_shared("A")
+    beats = packets(Message("n01", "n00", payload=bytes(64), address="A",
+                            transaction_id=request.transaction_id, dbid=91,
+                            home_nid="n01", channel=Channel.DAT,
+                            opcode=DatOpcode.COMP_DATA), 16)
+    for beat in (beats[3], beats[0], beats[2]):
+      system.cc0.receive(beat)
+      self.assertIsNone(system.cc0.read_response_for(request))
+      self.assertIn(request.transaction_id, system.cc0.active_requests)
+      self.assertEqual(1, len(system.ring.in_flight))
+    system.cc0.receive(beats[1])
+    self.assertFalse(system.cc0.active_requests)
+    self.assertEqual(91, system.ring.in_flight[-1].message.transaction_id)
+
+  def test_partial_error_leaves_memory_and_resources_intact(self):
+    system = Zhujiang(error_addresses={0}, buffer_capacity=2, id_capacity=1)
+    original = bytes(range(64))
+    system.s.dj.write(0, original)
+    request = system.cc0.write_no_snp_partial(0, bytes(64), (1 << 64) - 1)
+    system.run_until_idle(500)
+    self.assertEqual(RespErr.NDERR, system.cc0.write_response_for(request).resp_err)
+    self.assertEqual(original, system.s.dj.data_by_address[0])
+    self.assertFalse(system.hf.address_busy)
+    self.assertFalse(system.hf.write_dbids)
+    self.assertFalse(system.s.pending_writes)
+
   def test_partial_write_masks_across_packet_boundaries(self):
     for width in (16, 32, 64):
       system = Zhujiang(data_width=width, id_capacity=1, buffer_capacity=2)

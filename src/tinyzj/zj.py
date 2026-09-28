@@ -417,6 +417,7 @@ class HomeWrapper(Endpoint):
     self.pending_snoops = {}
     self.pending_write_data = {}
     self.next_home_id = 0
+    self.pending_write_errors = {}
     self.next_downstream_id = 0
     self.downstream_requests = {}
     self.next_dbid = 0
@@ -454,6 +455,7 @@ class HomeWrapper(Endpoint):
     home_id = self.downstream_requests.pop(txn_id)
     request = self.pending_requests.pop(home_id)
     self.pending_write_data.pop(home_id)
+    self.pending_write_errors.pop(home_id, None)
     if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
       self.dirty_data.pop(request.address, None)
     busy = self.address_busy.get(request.address)
@@ -683,6 +685,7 @@ class HomeWrapper(Endpoint):
     ):
       home_id = self.write_dbids.pop(message.transaction_id)
       self.pending_write_data[home_id] = message.payload
+      self.pending_write_errors[home_id] = message.resp_err
       request = self.pending_requests[home_id]
       request_mask = request.byte_enable
       if message.byte_enable != request_mask:
@@ -700,6 +703,7 @@ class HomeWrapper(Endpoint):
         channel=Channel.DAT,
         opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
         byte_enable=self.pending_requests[self.downstream_requests[message.transaction_id]].byte_enable,
+        resp_err=self.pending_write_errors.get(self.downstream_requests[message.transaction_id], RespErr.OK),
       )
       self.send(write_data)
       self.downstream_data_sent.add(message.transaction_id)
@@ -813,7 +817,7 @@ class StorageWrapper(Endpoint):
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
     ):
       request = self.pending_writes.pop(message.transaction_id)
-      if request.address not in self.error_addresses:
+      if request.address not in self.error_addresses and message.resp_err == RespErr.OK:
         if request.opcode == ReqOpcode.WRITE_NO_SNP_PTL:
           self.dj.write_partial(request.address, message.payload, message.byte_enable)
         else:
@@ -824,7 +828,7 @@ class StorageWrapper(Endpoint):
         transaction_id=request.transaction_id,
         resp_err=(
           RespErr.NDERR
-          if request.address in self.error_addresses
+          if request.address in self.error_addresses or message.resp_err != RespErr.OK
           else RespErr.OK
         ),
         channel=Channel.RSP,
