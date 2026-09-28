@@ -14,6 +14,7 @@ def packets(message, width):
     packet.payload = message.payload[offset:offset + width]
     packet.data_id = offset // 16
     packet.line_bytes = 64
+    packet.poison = (message.poison >> (offset // 8)) & ((1 << (width // 8)) - 1)
     if message.byte_enable is not None:
       packet.byte_enable = (message.byte_enable >> offset) & ((1 << width) - 1)
       packet.payload = bytes(value if packet.byte_enable & (1 << i) else 0
@@ -30,6 +31,10 @@ class DataAssembly:
 
   def accept(self, message):
     if message.channel != Channel.DAT or message.line_bytes is None:
+      if message.channel == Channel.DAT and message.poison:
+        result = copy(message)
+        result.resp_err = RespErr.DERR
+        return result
       return message
     expected = set(range(0, 4, self.width // 16))
     if message.line_bytes != 64 or message.data_id not in expected:
@@ -52,8 +57,11 @@ class DataAssembly:
     result = copy(parts[min(parts)])
     result.payload = b"".join(parts[index].payload for index in sorted(parts))
     result.line_bytes = None
+    result.poison = sum(part.poison << (index * 2) for index, part in parts.items())
     if any(part.byte_enable is not None for part in parts.values()):
       result.byte_enable = sum((part.byte_enable or 0) << (index * 16) for index, part in parts.items())
     errors = {part.resp_err for part in parts.values()}
     result.resp_err = next((error for error in (RespErr.NDERR, RespErr.DERR) if error in errors), RespErr.OK)
+    if result.poison and result.resp_err == RespErr.OK:
+      result.resp_err = RespErr.DERR
     return result

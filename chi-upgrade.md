@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- E4：按 8-byte 粒度拆分/重组 Poison；端点选择不缓存 Poison 数据，将其转换为 DERR（IHI0050 G B9.2.1/B9.2.3 pp.371–372）。RN 不填充错误缓存；HF 接管 snoop/copyback dirty 数据时保存错误状态，并在后续读或驱逐中传播，不能重新作为 OK 数据使用。108 测试通过，覆盖所有数据宽度及 poisoned read。不是支持长期存储逐字节 Poison 标记的内存模型，DataCheck 尚未实现。
+
 - E3：修复 HF 转发写数据丢失 RespErr，逐拍错误汇总后一直保留至 S；S 拒绝用错误数据覆盖原内存并返回 NDERR。106 测试通过，新增最后一拍前 RN TxnID/CompAck 持有、部分写失败不修改内存、任意写包错误的端到端检查。Poison 与 DataCheck 尚未实现，此条仅指 RespErr。
 
 - E2：新增显式 `write_no_snp_partial(aligned_address, bytes64, byte_enable)`，经 HF→S 的 WriteNoSnpPtl 更新选中字节。BE 按 DAT 包拆分/合并，未使能的线上字节置零；支持零掩码（IHI0050 G B2.8.3 p.156，Normal memory）。103 测试通过，覆盖跨 16/32-byte 边界掩码、零掩码及输入拒绝。当前仅支持完整 64-byte 地址窗口；子行 Size/Device memory 尚未支持，REQ 中 BE 仅是本模型的传递元数据。

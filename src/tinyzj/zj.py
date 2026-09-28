@@ -424,6 +424,7 @@ class HomeWrapper(Endpoint):
     self.write_dbids = {}
     self.next_snoop_id = 0
     self.dirty_data = {}
+    self.dirty_errors = {}
     self.downstream_completions = {}
     self.downstream_data_sent = set()
     self.evictions = {}
@@ -444,6 +445,7 @@ class HomeWrapper(Endpoint):
     self.evictions[home_id] = request
     self.address_busy[address] = {home_id}
     self.pending_write_data[home_id] = self.dirty_data[address]
+    self.pending_write_errors[home_id] = self.dirty_errors.get(address, RespErr.OK)
     self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
     return request
 
@@ -458,6 +460,7 @@ class HomeWrapper(Endpoint):
     self.pending_write_errors.pop(home_id, None)
     if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
       self.dirty_data.pop(request.address, None)
+      self.dirty_errors.pop(request.address, None)
     busy = self.address_busy.get(request.address)
     if busy is not None:
       busy.discard(home_id)
@@ -468,6 +471,7 @@ class HomeWrapper(Endpoint):
       self.eviction_results[request] = completion
       if completion.resp_err == RespErr.OK:
         self.dirty_data.pop(request.address)
+        self.dirty_errors.pop(request.address, None)
       return
     self.ring.inject(Message(
       self.node_name,
@@ -494,7 +498,8 @@ class HomeWrapper(Endpoint):
   def _send_storage_request(self, home_id, opcode):
     request = self.pending_requests[home_id]
     if opcode == ReqOpcode.READ_NO_SNP and request.opcode != ReqOpcode.READ_NO_SNP and request.address in self.dirty_data:
-      self._complete_read(home_id, self.dirty_data[request.address], request.address, True, RespErr.OK)
+      self._complete_read(home_id, self.dirty_data[request.address], request.address, True,
+                          self.dirty_errors.get(request.address, RespErr.OK))
       return
     downstream_id = allocate_id(self, "next_downstream_id", self.downstream_requests)
     self.downstream_requests[downstream_id] = home_id
@@ -642,6 +647,7 @@ class HomeWrapper(Endpoint):
       entry = self.pending_snoops[message.transaction_id]
       if message.opcode == DatOpcode.SNP_RESP_DATA:
         self.dirty_data[entry["address"]] = message.payload
+        self.dirty_errors[entry["address"]] = message.resp_err
       entry["awaiting"].discard(message.source_name)
       if not entry["awaiting"]:
         self.pending_snoops.pop(message.transaction_id)
@@ -672,6 +678,7 @@ class HomeWrapper(Endpoint):
       request = self.pending_requests.pop(home_id)
       if message.resp == Resp.UD:
         self.dirty_data[request.address] = message.payload
+        self.dirty_errors[request.address] = message.resp_err
       holders = self.directory.get(request.address, {})
       holders.pop(request.source_name, None)
       if not holders:

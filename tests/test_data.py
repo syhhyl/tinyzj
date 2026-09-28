@@ -8,6 +8,29 @@ from tinyzj.zj import Zhujiang
 
 class DataTest(unittest.TestCase):
 
+  def test_poison_bit_offsets_and_error_conversion(self):
+    for width in (16, 32, 64):
+      assembler = DataAssembly(width)
+      message = Message("s", "r", payload=bytes(64), channel=Channel.DAT,
+                        poison=0b10000101)
+      result = None
+      for beat in reversed(packets(message, width)):
+        result = assembler.accept(beat)
+      self.assertEqual(message.poison, result.poison)
+      self.assertEqual(RespErr.DERR, result.resp_err)
+
+  def test_poisoned_read_does_not_fill_requester_cache(self):
+    system = Zhujiang()
+    request = system.cc0.read_shared("A")
+    response = Message("n01", "n00", address="A", payload=bytes(64),
+                       transaction_id=request.transaction_id, dbid=3,
+                       home_nid="n01", channel=Channel.DAT,
+                       opcode=DatOpcode.COMP_DATA, poison=1)
+    for beat in packets(response, 16):
+      system.cc0.receive(beat)
+    self.assertNotIn("A", system.cc0.cache)
+    self.assertEqual(RespErr.DERR, system.cc0.read_response_for(request).resp_err)
+
   def test_corrupted_write_packet_does_not_modify_memory(self):
     system = Zhujiang(id_capacity=1, buffer_capacity=2)
     system.s.dj.write("A", bytes(64))
