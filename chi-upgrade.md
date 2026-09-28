@@ -45,6 +45,12 @@
 
 ## 执行记录
 
+提交规则：以后每个可验证增量完成后，运行回归并创建本地 Conventional Commit，不自动推送。
+
+- A3a 已完成：`Zhujiang(id_capacity=N)` 限制 HF 四个 ID 空间及 SN DBID，各空间独立循环分配并跳过活跃 ID；HF 按活跃内部事务数保守预留后续资源，仅对 REQ 背压，SN 对写 REQ 检查 DBID 容量。默认 None 保持原行为。容量 1/2/3 的逐步检查覆盖复用、并发、snoop 与错误清理；80 个测试及三个演示通过。RN TxnID 仍单调递增，下一步 A3b。
+
+A3 分为两个独立验收增量：A3a 为 HF 内部/home、下游、写 DBID、snoop 及 SN DBID 增加可选容量，共用容量配置但各自独立分配；HF 接受请求时保守地按内部事务数预留后续阶段资源，避免收下请求后等待 ID 形成依赖环。A3b 再处理 RN TxnID 的本地等待队列、响应历史与 CompAck 安全复用。本轮先完成 A3a，不宣称已实现全部 ID 的有界化。
+
 - A1 已完成：`HomeWrapper` 新增独立下游计数器和 `downstream_requests` 映射，统一下游请求构造。读数据返回后释放下游映射；写的 DBIDResp 保持映射，Comp 后释放。缓存读继续持有内部 home_id 到 CompAck。
 - 测试刻意使用 home_id=100、下游 TxnID=1000、SN DBID=10000 起点，覆盖正常/错误与 snoop 后读；并发压力也使用错开的 ID 空间并检查映射清空。
 - 77 个测试通过，孤立读 10 步、写 20 步仍通过；三个示例 CLI 运行完成。下一步 A2。

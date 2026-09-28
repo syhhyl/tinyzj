@@ -10,6 +10,26 @@ from .chi import (
 from .dj import DongJiang
 from .xj import Message, Ring, RingNode
 
+
+def allocate_id(endpoint, counter, active):
+  candidate = getattr(endpoint, counter)
+  capacity = endpoint.id_capacity
+  if capacity is not None:
+    candidate %= capacity
+    for _ in range(capacity):
+      if candidate not in active:
+        break
+      candidate = (candidate + 1) % capacity
+    else:
+      raise RuntimeError("ID reservation invariant violated")
+  setattr(endpoint, counter, candidate + 1 if capacity is None else (candidate + 1) % capacity)
+  return candidate
+
+
+def validate_id_capacity(capacity):
+  if capacity is not None and (type(capacity) is not int or capacity < 1):
+    raise ValueError("id_capacity must be a positive integer")
+
 class Zhujiang:
   
   def __init__(
@@ -17,7 +37,9 @@ class Zhujiang:
     buffer_capacity=None,
     max_transactions=None,
     error_addresses=None,
+    id_capacity=None,
   ):
+    validate_id_capacity(id_capacity)
     self.ring = Ring([
       RingNode("n00", "CC0"),
       RingNode("n01", "HF"),
@@ -31,12 +53,14 @@ class Zhujiang:
       "n01",
       "n10",
       max_transactions=max_transactions,
+      id_capacity=id_capacity,
     )
     self.cc1 = Socket(self.ring, "n11", "n01")
     self.s = StorageWrapper(
       self.ring,
       "n10",
       error_addresses=error_addresses,
+      id_capacity=id_capacity,
     )
 
     self.ring.connect("n00", self.cc0)
@@ -226,8 +250,10 @@ class Socket(Endpoint):
 
 class HomeWrapper(Endpoint):
   
-  def __init__(self, ring, node_name, storage_name, max_transactions=None):
+  def __init__(self, ring, node_name, storage_name, max_transactions=None, id_capacity=None):
     super().__init__()
+    validate_id_capacity(id_capacity)
+    self.id_capacity = id_capacity
     self.ring = ring
     self.node_name = node_name
     self.storage_name = storage_name
@@ -250,8 +276,7 @@ class HomeWrapper(Endpoint):
 
   def _send_write_dbid(self, home_id):
     request = self.pending_requests[home_id]
-    dbid = self.next_dbid
-    self.next_dbid += 1
+    dbid = allocate_id(self, "next_dbid", self.write_dbids)
     self.write_dbids[dbid] = home_id
     self.ring.inject(Message(
       self.node_name,
@@ -263,8 +288,7 @@ class HomeWrapper(Endpoint):
     ))
 
   def _send_storage_request(self, home_id, opcode):
-    downstream_id = self.next_downstream_id
-    self.next_downstream_id += 1
+    downstream_id = allocate_id(self, "next_downstream_id", self.downstream_requests)
     self.downstream_requests[downstream_id] = home_id
     self.ring.inject(Message(
       self.node_name,
@@ -278,6 +302,8 @@ class HomeWrapper(Endpoint):
   def can_receive(self, message):
     if message.channel != Channel.REQ:
       return True
+    if self.id_capacity is not None and len(self.pending_requests) >= self.id_capacity:
+      return False
     if self.address_busy.get(message.address):
       return False
     if self.max_transactions is None:
@@ -293,8 +319,7 @@ class HomeWrapper(Endpoint):
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
-      home_id = self.next_home_id
-      self.next_home_id += 1
+      home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
       holders = set(self.directory.get(message.address, {}))
@@ -303,8 +328,7 @@ class HomeWrapper(Endpoint):
         ReqOpcode.READ_UNIQUE: SnpOpcode.SNP_UNIQUE,
       }.get(message.opcode)
       if snoop_opcode and holders:
-        snoop_id = self.next_snoop_id
-        self.next_snoop_id += 1
+        snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
           "home_id": home_id,
           "address": message.address,
@@ -336,14 +360,12 @@ class HomeWrapper(Endpoint):
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
-      home_id = self.next_home_id
-      self.next_home_id += 1
+      home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
       holders = set(self.directory.get(message.address, {}))
       if holders:
-        snoop_id = self.next_snoop_id
-        self.next_snoop_id += 1
+        snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
           "home_id": home_id,
           "address": message.address,
@@ -474,14 +496,21 @@ class HomeWrapper(Endpoint):
 
 class StorageWrapper(Endpoint):
 
-  def __init__(self, ring, node_name, error_addresses=None):
+  def __init__(self, ring, node_name, error_addresses=None, id_capacity=None):
     super().__init__()
+    validate_id_capacity(id_capacity)
+    self.id_capacity = id_capacity
     self.ring = ring
     self.node_name = node_name
     self.error_addresses = set(error_addresses or ())
     self.dj = DongJiang()
     self.pending_writes = {}
     self.next_dbid = 0
+
+  def can_receive(self, message):
+    if message.channel != Channel.REQ or message.opcode != ReqOpcode.WRITE_NO_SNP_FULL:
+      return True
+    return self.id_capacity is None or len(self.pending_writes) < self.id_capacity
 
   def receive(self, message):
     super().receive(message)
@@ -509,8 +538,7 @@ class StorageWrapper(Endpoint):
       message.channel == Channel.REQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
     ):
-      dbid = self.next_dbid
-      self.next_dbid += 1
+      dbid = allocate_id(self, "next_dbid", self.pending_writes)
       self.pending_writes[dbid] = message
       dbid_response = Message(
         self.node_name,

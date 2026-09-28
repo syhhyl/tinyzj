@@ -6,6 +6,48 @@ from tinyzj.zj import Zhujiang
 
 class DownstreamIDTest(unittest.TestCase):
 
+  def test_reject_invalid_id_capacity(self):
+    for capacity in (0, -1, True, 1.5):
+      with self.subTest(capacity=capacity), self.assertRaises(ValueError):
+        Zhujiang(id_capacity=capacity)
+
+  def test_bounded_ids_backpressure_and_reuse(self):
+    for capacity in (1, 2, 3):
+      with self.subTest(capacity=capacity):
+        system = Zhujiang(buffer_capacity=2, id_capacity=capacity, error_addresses=["E"])
+        for cc in (system.cc0, system.cc1):
+          cc.read_shared("A")
+          system.run_until_idle(200)
+        requests = []
+        for index in range(24):
+          cc = (system.cc0, system.cc1)[index % 2]
+          address = ("A", "B", "E")[index % 3]
+          operation = ("write", "read_shared", "read_unique", "read")[index % 4]
+          args = (address, str(index)) if operation == "write" else (address,)
+          request = getattr(cc, operation)(*args)
+          if request is not None:
+            requests.append((cc, operation, request))
+        for _ in range(2000):
+          if not system.ring.in_flight:
+            break
+          system.step()
+          for table in (system.hf.pending_requests, system.hf.downstream_requests,
+                        system.hf.write_dbids, system.hf.pending_snoops, system.s.pending_writes):
+            self.assertLessEqual(len(table), capacity)
+            self.assertTrue(all(0 <= key < capacity for key in table))
+        self.assertFalse(system.ring.in_flight)
+        for cc, operation, request in requests:
+          response = (cc.write_response_for if operation == "write" else cc.read_response_for)(request)
+          self.assertIsNotNone(response)
+          expected = RespErr.OK if request.address != "E" else (
+            RespErr.NDERR if operation == "write" else RespErr.DERR)
+          self.assertEqual(expected, response.resp_err)
+        for table in (system.hf.pending_requests, system.hf.downstream_requests,
+                      system.hf.write_dbids, system.hf.pending_snoops,
+                      system.hf.address_busy, system.hf.pending_comp_acks,
+                      system.hf.pending_write_data, system.s.pending_writes):
+          self.assertFalse(table)
+
   def test_write_dbid_and_snoop_spaces_are_independent(self):
     for separate in (False, True):
       with self.subTest(separate=separate):
