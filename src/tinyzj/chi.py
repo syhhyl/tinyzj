@@ -4,6 +4,12 @@ class Channel:
   RSP = "RSP"
   DAT = "DAT"
   ERQ = "ERQ"
+  SNP = "SNP"
+
+
+class SnpOpcode:
+
+  SNP_SHARED = "SnpShared"
 
 
 class ReqOpcode:
@@ -18,6 +24,7 @@ class RspOpcode:
   COMP = "Comp"
   DBID_RESP = "DBIDResp"
   COMP_ACK = "CompAck"
+  SNP_RESP = "SnpResp"
 
 
 class DatOpcode:

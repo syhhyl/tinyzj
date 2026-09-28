@@ -69,7 +69,7 @@ class Ring:
     self.source_queues = {
       node.name: {
         channel: []
-        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ)
+        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ, Channel.SNP)
       }
       for node in self.nodes
     }
@@ -77,7 +77,7 @@ class Ring:
       node.name: {
         (direction, channel): []
         for direction in (-1, 1)
-        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ)
+        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ, Channel.SNP)
       }
       for node in self.nodes
     }
@@ -116,6 +116,7 @@ class Ring:
       Channel.RSP,
       Channel.DAT,
       Channel.ERQ,
+      Channel.SNP,
     ):
       raise ValueError("message needs a known channel")
     self._node_index(message.source_name)

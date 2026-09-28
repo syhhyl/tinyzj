@@ -7,6 +7,7 @@ from tinyzj.chi import (
   Resp,
   RespErr,
   RspOpcode,
+  SnpOpcode,
 )
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
@@ -413,6 +414,44 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(RespErr.DERR, response.resp_err)
     self.assertEqual({}, zhujiang.cc0.cache)
     self.assertEqual({}, zhujiang.hf.directory)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_comp_acks)
+    self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_second_read_shared_snoops_the_first_holder(self):
+    zhujiang = Zhujiang(buffer_capacity=2)
+    zhujiang.s.dj.write("0x1000", "value 1")
+    first = zhujiang.cc0.read_shared("0x1000")
+    zhujiang.run_until_idle()
+    self.assertEqual({"n00": Resp.SC}, zhujiang.hf.directory["0x1000"])
+    hf_count = len(zhujiang.hf.received_messages)
+
+    second = zhujiang.cc1.read_shared("0x1000")
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc1.read_response_for(second)
+    self.assertEqual("value 1", response.payload)
+    self.assertEqual(Resp.SC, response.resp)
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc0.cache["0x1000"])
+    self.assertEqual((Resp.SC, "value 1"), zhujiang.cc1.cache["0x1000"])
+    self.assertEqual(
+      {"n00": Resp.SC, "n11": Resp.SC},
+      zhujiang.hf.directory["0x1000"],
+    )
+    snp_shared = [
+      message
+      for message in zhujiang.cc0.received_messages
+      if message.channel == Channel.SNP
+    ]
+    self.assertEqual(1, len(snp_shared))
+    self.assertEqual(SnpOpcode.SNP_SHARED, snp_shared[0].opcode)
+    snp_resps = [
+      message
+      for message in zhujiang.hf.received_messages[hf_count:]
+      if message.opcode == RspOpcode.SNP_RESP
+    ]
+    self.assertEqual(1, len(snp_resps))
+    self.assertEqual({}, zhujiang.hf.pending_snoops)
     self.assertEqual({}, zhujiang.hf.pending_requests)
     self.assertEqual({}, zhujiang.hf.pending_comp_acks)
     self.assertEqual([], zhujiang.ring.in_flight)

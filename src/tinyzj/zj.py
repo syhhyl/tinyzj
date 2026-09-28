@@ -1,4 +1,12 @@
-from .chi import Channel, DatOpcode, ReqOpcode, Resp, RespErr, RspOpcode
+from .chi import (
+  Channel,
+  DatOpcode,
+  ReqOpcode,
+  Resp,
+  RespErr,
+  RspOpcode,
+  SnpOpcode,
+)
 from .dj import DongJiang
 from .xj import Message, Ring, RingNode
 
@@ -153,6 +161,22 @@ class Socket(Endpoint):
           )
         )
     elif (
+      message.channel == Channel.SNP
+      and message.opcode == SnpOpcode.SNP_SHARED
+    ):
+      if message.address in self.cache:
+        state, payload = self.cache[message.address]
+        self.cache[message.address] = (Resp.SC, payload)
+      self.ring.inject(
+        Message(
+          self.node_name,
+          message.source_name,
+          transaction_id=message.transaction_id,
+          channel=Channel.RSP,
+          opcode=RspOpcode.SNP_RESP,
+        )
+      )
+    elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.DBID_RESP
     ):
@@ -189,13 +213,19 @@ class HomeWrapper(Endpoint):
     self.pending_requests = {}
     self.pending_comp_acks = {}
     self.directory = {}
+    self.pending_snoops = {}
     self.pending_write_data = {}
     self.next_home_id = 0
 
   def can_receive(self, message):
-    if self.max_transactions is None:
-      return True
     if message.channel != Channel.REQ:
+      return True
+    if any(
+      entry["address"] == message.address
+      for entry in self.pending_snoops.values()
+    ):
+      return False
+    if self.max_transactions is None:
       return True
     return len(self.pending_requests) < self.max_transactions
 
@@ -210,15 +240,33 @@ class HomeWrapper(Endpoint):
       home_id = self.next_home_id
       self.next_home_id += 1
       self.pending_requests[home_id] = message
-      storage_request = Message(
-        self.node_name,
-        self.storage_name,
-        address=message.address,
-        transaction_id=home_id,
-        channel=Channel.ERQ,
-        opcode=ReqOpcode.READ_NO_SNP,
-      )
-      self.ring.inject(storage_request)
+      holders = set(self.directory.get(message.address, {}))
+      if message.opcode == ReqOpcode.READ_SHARED and holders:
+        self.pending_snoops[home_id] = {
+          "address": message.address,
+          "awaiting": holders,
+        }
+        for holder_name in holders:
+          self.ring.inject(
+            Message(
+              self.node_name,
+              holder_name,
+              address=message.address,
+              transaction_id=home_id,
+              channel=Channel.SNP,
+              opcode=SnpOpcode.SNP_SHARED,
+            )
+          )
+      else:
+        storage_request = Message(
+          self.node_name,
+          self.storage_name,
+          address=message.address,
+          transaction_id=home_id,
+          channel=Channel.ERQ,
+          opcode=ReqOpcode.READ_NO_SNP,
+        )
+        self.ring.inject(storage_request)
     elif (
       message.channel == Channel.REQ
       and message.opcode == ReqOpcode.WRITE_NO_SNP_FULL
@@ -260,6 +308,23 @@ class HomeWrapper(Endpoint):
           (request.source_name, request.transaction_id)
         ] = (message.address, message.resp_err)
       self.ring.inject(response)
+    elif (
+      message.channel == Channel.RSP
+      and message.opcode == RspOpcode.SNP_RESP
+    ):
+      entry = self.pending_snoops[message.transaction_id]
+      entry["awaiting"].discard(message.source_name)
+      if not entry["awaiting"]:
+        self.pending_snoops.pop(message.transaction_id)
+        storage_request = Message(
+          self.node_name,
+          self.storage_name,
+          address=entry["address"],
+          transaction_id=message.transaction_id,
+          channel=Channel.ERQ,
+          opcode=ReqOpcode.READ_NO_SNP,
+        )
+        self.ring.inject(storage_request)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP_ACK

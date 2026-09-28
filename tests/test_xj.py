@@ -149,7 +149,7 @@ class InjectionTest(unittest.TestCase):
   def test_rejects_unknown_or_missing_channel(self):
     ring = make_ring()
 
-    for channel in (None, "SNP"):
+    for channel in (None, "HRQ"):
       with self.subTest(channel=channel):
         with self.assertRaisesRegex(ValueError, "message needs a known channel"):
           ring.inject(Message("cc", "io", channel=channel))
