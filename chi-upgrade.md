@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- E5：bytes64 数据包产生每字节奇校验 DataCheck，接收发现不匹配转为 DERR 并等待全部包收齐；IHI0050 G B9.2.2 p.371。109 测试通过，包含已知奇校验向量及中间包单 bit 损坏。
+
 - E4：按 8-byte 粒度拆分/重组 Poison；端点选择不缓存 Poison 数据，将其转换为 DERR（IHI0050 G B9.2.1/B9.2.3 pp.371–372）。RN 不填充错误缓存；HF 接管 snoop/copyback dirty 数据时保存错误状态，并在后续读或驱逐中传播，不能重新作为 OK 数据使用。108 测试通过，覆盖所有数据宽度及 poisoned read。不是支持长期存储逐字节 Poison 标记的内存模型，DataCheck 尚未实现。
 
 - E3：修复 HF 转发写数据丢失 RespErr，逐拍错误汇总后一直保留至 S；S 拒绝用错误数据覆盖原内存并返回 NDERR。106 测试通过，新增最后一拍前 RN TxnID/CompAck 持有、部分写失败不修改内存、任意写包错误的端到端检查。Poison 与 DataCheck 尚未实现，此条仅指 RespErr。

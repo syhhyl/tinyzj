@@ -34,6 +34,7 @@ class Message:
     line_bytes=None,
     byte_enable=None,
     poison=0,
+    data_check=None,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -61,6 +62,7 @@ class Message:
     self.line_bytes = line_bytes
     self.byte_enable = byte_enable
     self.poison = poison
+    self.data_check = data_check
 
 class Injection:
 

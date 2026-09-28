@@ -5,6 +5,10 @@ from copy import copy
 from .chi import Channel, RespErr
 
 
+def data_check(payload):
+  return sum((1 ^ (value.bit_count() & 1)) << i for i, value in enumerate(payload))
+
+
 def packets(message, width):
   if message.channel != Channel.DAT or not isinstance(message.payload, bytes) or len(message.payload) != 64:
     return [message]
@@ -19,6 +23,7 @@ def packets(message, width):
       packet.byte_enable = (message.byte_enable >> offset) & ((1 << width) - 1)
       packet.payload = bytes(value if packet.byte_enable & (1 << i) else 0
                              for i, value in enumerate(packet.payload))
+    packet.data_check = data_check(packet.payload)
     result.append(packet)
   return result
 
@@ -30,6 +35,12 @@ class DataAssembly:
     self.pending = {}
 
   def accept(self, message):
+    if message.channel == Channel.DAT and message.data_check is not None:
+      if not isinstance(message.payload, bytes):
+        raise ValueError("DataCheck requires byte data")
+      if message.data_check != data_check(message.payload):
+        message = copy(message)
+        message.resp_err = RespErr.DERR
     if message.channel != Channel.DAT or message.line_bytes is None:
       if message.channel == Channel.DAT and message.poison:
         result = copy(message)
@@ -57,6 +68,7 @@ class DataAssembly:
     result = copy(parts[min(parts)])
     result.payload = b"".join(parts[index].payload for index in sorted(parts))
     result.line_bytes = None
+    result.data_check = data_check(result.payload)
     result.poison = sum(part.poison << (index * 2) for index, part in parts.items())
     if any(part.byte_enable is not None for part in parts.values()):
       result.byte_enable = sum((part.byte_enable or 0) << (index * 16) for index, part in parts.items())

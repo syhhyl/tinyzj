@@ -1,12 +1,21 @@
 import unittest
 
 from tinyzj.chi import Channel, DatOpcode, RespErr
-from tinyzj.data import DataAssembly, packets
+from tinyzj.data import DataAssembly, data_check, packets
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
 
 
 class DataTest(unittest.TestCase):
+
+  def test_odd_byte_parity_detects_corrupted_packet(self):
+    self.assertEqual(0b1001, data_check(bytes((0, 1, 2, 3))))
+    assembler = DataAssembly(16)
+    beats = packets(Message("s", "r", payload=bytes(64), channel=Channel.DAT), 16)
+    beats[2].payload = bytes([1]) + beats[2].payload[1:]
+    for beat in beats[:-1]:
+      self.assertIsNone(assembler.accept(beat))
+    self.assertEqual(RespErr.DERR, assembler.accept(beats[-1]).resp_err)
 
   def test_poison_bit_offsets_and_error_conversion(self):
     for width in (16, 32, 64):
