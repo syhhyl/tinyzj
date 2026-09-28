@@ -19,7 +19,7 @@ class StressTest(unittest.TestCase):
     for cc in (system.cc0, system.cc1):
       self.assertFalse(cc.pending_write_data)
       self.assertFalse(cc.has_pending_requests())
-      self.assertFalse(cc.pending_acks)
+      self.assertTrue(all(state == "complete" for state in cc.request_states.values()))
       self.assertFalse(cc.waiting_write_data)
       for address, (state, value) in cc.cache.items():
         self.assertNotIn(address, system.s.error_addresses)

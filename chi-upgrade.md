@@ -45,6 +45,10 @@
 
 ## 执行记录
 
+- B2 已完成当前单拍顺序响应路径的 RN 状态与释放：请求状态记录 queued、await_data、await_dbid、await_comp、send_comp_ack、complete。收到读完成数据并把必需的 CompAck 放入可靠源队列后释放 RN TxnID；HF 仍等 CompAck 真正交付才释放 Home DBID/地址锁。删除 RN 的 pending_acks 全网扫描机制。参考 Arm 官方 Transaction flows： https://developer.arm.com/documentation/102407/0102/Transaction-flows ，RN 发送完成确认与 HN 接收后解锁分别是本地事件。
+- `Ring.inject()` 当前无失败且源队列无限，提交队列视作发送责任转移；若后续 C 引入有界源队列/握手，释放条件必须改为明确的发送接受事件。send_comp_ack 在当前模型中为同步瞬态，不占额外 step。状态历史用于教学与验证，仍非所有 CHI opcode 的通用状态机；Comp 早于 DBIDResp 等写响应重排留在 B3。
+- B2 验收：旧 CompAck 在途时容量 1 的 RN 复用 TxnID；人工延迟 CompAck 交付时 HF 仍持有原事务与地址锁，恢复后所有请求完成；84 测试通过。A3b 的交付后复用策略已由本条替代。
+
 - B 拆为 B1 现有读路径字段关联、B2 完成状态机及 RN 释放条件、B3 合法响应组合与重排。B1 已实现：REQ 显式携带 `exp_comp_ack`（当前共享/独占读为 True）；CompData 携带 HomeNID 和以内部 home_id 为令牌的 DBID；RN 依据原请求的 ExpCompAck 发确认，CompAck 的目标为 HomeNID、TxnID 为返回的 DBID。HF 按 `(RN源节点, DBID)` 释放读事务。普通读保持不要求确认。
 - B1 参考：Arm 官方《AMBA 5 CHI Architecture Specification》（2017 公开版本），Transaction identifier fields 2-73、Transaction structure 2-39、Ordering 2-63；URL https://documentation-service.arm.com/static/5f914e1cf86e16515cdc2b3b 。官方字段说明明确 HomeNID 为 CompAck 目标、DBID 为响应采用的 TxnID。此处核对的是已有读路径通用关联，不代表已完成 CHI-G 全部版本差异审计。CHI-G 的准确 issue/字段合法组合以及其他 opcode 的 ExpCompAck 约束仍需在扩展时核对。
 - B1 测试覆盖 RN TxnID=0 与 Home DBID=100、正常/错误读均确认、HF 确认前持有资源、普通读不确认；RN 暂时保留 A3b 的保守交付后复用策略，B2 再完善。

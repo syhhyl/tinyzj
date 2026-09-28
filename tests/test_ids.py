@@ -6,6 +6,25 @@ from tinyzj.zj import Zhujiang
 
 class DownstreamIDTest(unittest.TestCase):
 
+  def test_reused_requester_id_does_not_release_home_before_delayed_ack(self):
+    system = Zhujiang(buffer_capacity=2, id_capacity=1)
+    original_can_receive = system.hf.can_receive
+    system.hf.can_receive = lambda m: m.opcode != RspOpcode.COMP_ACK and original_can_receive(m)
+    first = system.cc0.read_shared("A")
+    second = system.cc0.read("B")
+    for _ in range(30):
+      system.step()
+    self.assertEqual("complete", system.cc0.request_states[first])
+    self.assertEqual(0, second.transaction_id)
+    self.assertIsNone(system.cc0.read_response_for(second))
+    self.assertTrue(system.hf.pending_comp_acks)
+    self.assertIn("A", system.hf.address_busy)
+    system.hf.can_receive = original_can_receive
+    system.run_until_idle(100)
+    self.assertIsNotNone(system.cc0.read_response_for(second))
+    self.assertFalse(system.hf.pending_comp_acks)
+    self.assertFalse(system.hf.address_busy)
+
   def test_comp_ack_uses_home_dbid_instead_of_requester_txnid(self):
     for error in (False, True):
       with self.subTest(error=error):
@@ -24,19 +43,20 @@ class DownstreamIDTest(unittest.TestCase):
         self.assertEqual("n01", response.home_nid)
         self.assertIn(("n00", 100), system.hf.pending_comp_acks)
         self.assertIn(100, system.hf.pending_requests)
-        ack = system.cc0.pending_acks[0]
+        ack = next(i.message for i in system.ring.in_flight
+                   if i.message.opcode == RspOpcode.COMP_ACK)
         self.assertEqual(100, ack.transaction_id)
         self.assertEqual(response.home_nid, ack.target_name)
         system.run_until_idle()
         self.assertFalse(system.hf.pending_comp_acks)
         self.assertFalse(system.hf.pending_requests)
-        self.assertFalse(system.cc0.pending_acks)
+        self.assertEqual("complete", system.cc0.request_states[request])
         ordinary = system.cc0.read("B")
         self.assertFalse(ordinary.exp_comp_ack)
         system.run_until_idle()
         self.assertIsNone(system.cc0.read_response_for(ordinary).dbid)
 
-  def test_requester_reuse_preserves_response_history_and_waits_for_ack(self):
+  def test_requester_reuses_id_while_home_ack_is_in_flight(self):
     system = Zhujiang(buffer_capacity=2, id_capacity=1)
     system.s.dj.write("A", "first")
     system.s.dj.write("B", "second")
@@ -48,15 +68,17 @@ class DownstreamIDTest(unittest.TestCase):
       if system.cc0.read_response_for(first) is not None:
         break
       system.step()
-    self.assertTrue(system.cc0.pending_acks)
-    self.assertIsNone(second.transaction_id)
+    self.assertTrue(any(i.message.opcode == RspOpcode.COMP_ACK for i in system.ring.in_flight))
+    self.assertEqual(0, second.transaction_id)
+    self.assertEqual("complete", system.cc0.request_states[first])
+    self.assertEqual("await_data", system.cc0.request_states[second])
     self.assertIsNone(system.cc0.read_response_for(second))
     system.run_until_idle(200)
     self.assertEqual(0, second.transaction_id)
     self.assertEqual("first", system.cc0.read_response_for(first).payload)
     self.assertEqual("second", system.cc0.read_response_for(second).payload)
     self.assertFalse(system.cc0.has_pending_requests())
-    self.assertFalse(system.cc0.pending_acks)
+    self.assertEqual("complete", system.cc0.request_states[second])
 
   def test_queued_writes_keep_payloads_across_requester_id_reuse(self):
     system = Zhujiang(buffer_capacity=2, id_capacity=1, error_addresses=["E"])
