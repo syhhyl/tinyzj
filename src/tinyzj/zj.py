@@ -191,6 +191,13 @@ class Socket(Endpoint):
   def write_no_snp(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
 
+  def atomic_swap(self, address, value):
+    if type(address) is not int or address < 0 or address % 64:
+      raise ValueError("atomic swap requires an aligned line address")
+    if not isinstance(value, bytes) or len(value) != 8:
+      raise ValueError("atomic swap operand must be 8 bytes")
+    return self._write(address, value, ReqOpcode.ATOMIC_SWAP)
+
   def write_no_snp_partial(self, address, data, byte_enable):
     if type(address) is not int or address < 0 or address % 64:
       raise ValueError("partial line write requires a 64-byte aligned integer address")
@@ -253,7 +260,7 @@ class Socket(Endpoint):
         retry.pcrd_type = credit_key[1]
         self.ring.inject(retry)
         self.retry_requests.pop(txn_id)
-        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
+        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL, ReqOpcode.ATOMIC_SWAP) else "await_data"
     for request in list(self.waiting_requests):
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
@@ -263,7 +270,7 @@ class Socket(Endpoint):
       txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
       request.transaction_id = txn_id
       self.active_requests[txn_id] = request
-      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
+      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL, ReqOpcode.ATOMIC_SWAP) else "await_data"
       if request in self.waiting_write_data:
         self.pending_write_data[txn_id] = self.waiting_write_data.pop(request)
       self.ring.inject(request)
@@ -320,6 +327,9 @@ class Socket(Endpoint):
         self.ring.inject(ack)
       self.request_states[request] = "complete"
       self.active_requests.pop(message.transaction_id)
+      if request.opcode == ReqOpcode.ATOMIC_SWAP:
+        self.pending_write_data.pop(message.transaction_id)
+        self.write_data_sent.discard(message.transaction_id)
     elif (
       message.channel == Channel.SNP
       and message.opcode == SnpOpcode.SNP_SHARED
@@ -418,6 +428,7 @@ class HomeWrapper(Endpoint):
     self.pending_write_data = {}
     self.next_home_id = 0
     self.pending_write_errors = {}
+    self.atomic_results = {}
     self.next_downstream_id = 0
     self.downstream_requests = {}
     self.next_dbid = 0
@@ -458,6 +469,17 @@ class HomeWrapper(Endpoint):
     request = self.pending_requests.pop(home_id)
     self.pending_write_data.pop(home_id)
     self.pending_write_errors.pop(home_id, None)
+    if request.opcode == ReqOpcode.ATOMIC_SWAP:
+      old = self.atomic_results.pop(home_id)
+      if completion.resp_err == RespErr.OK:
+        self.dirty_data.pop(request.address, None)
+        self.dirty_errors.pop(request.address, None)
+      self.address_busy.pop(request.address)
+      self.send(Message(self.node_name, request.source_name, address=request.address,
+                        transaction_id=request.transaction_id, payload=old,
+                        channel=Channel.DAT, opcode=DatOpcode.COMP_DATA,
+                        resp_err=completion.resp_err, resp=Resp.I))
+      return
     if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
       self.dirty_data.pop(request.address, None)
       self.dirty_errors.pop(request.address, None)
@@ -602,14 +624,14 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL)
+      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL, ReqOpcode.ATOMIC_SWAP)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
       home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
-      holders = set(self.directory.get(message.address, {})) if message.opcode == ReqOpcode.WRITE_UNIQUE_FULL else set()
+      holders = set(self.directory.get(message.address, {})) if message.opcode in (ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.ATOMIC_SWAP) else set()
       if holders:
         snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
@@ -694,6 +716,9 @@ class HomeWrapper(Endpoint):
       self.pending_write_data[home_id] = message.payload
       self.pending_write_errors[home_id] = message.resp_err
       request = self.pending_requests[home_id]
+      if request.opcode == ReqOpcode.ATOMIC_SWAP:
+        self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
+        return
       request_mask = request.byte_enable
       if message.byte_enable != request_mask:
         raise ValueError("write data byte enable differs from request metadata")
@@ -726,6 +751,22 @@ class HomeWrapper(Endpoint):
 
   def _complete_read(self, home_id, payload, address, data_present, resp_err):
       request = self.pending_requests[home_id]
+      if request.opcode == ReqOpcode.ATOMIC_SWAP:
+        operand_error = self.pending_write_errors.get(home_id, RespErr.OK)
+        if resp_err != RespErr.OK or operand_error != RespErr.OK or not isinstance(payload, bytes) or len(payload) != 64:
+          self.pending_requests.pop(home_id)
+          self.pending_write_data.pop(home_id)
+          self.pending_write_errors.pop(home_id, None)
+          self.address_busy.pop(address)
+          self.send(Message(self.node_name, request.source_name, address=address,
+                            transaction_id=request.transaction_id,
+                            channel=Channel.DAT, opcode=DatOpcode.COMP_DATA,
+                            resp_err=RespErr.DERR, resp=Resp.I))
+          return
+        self.atomic_results[home_id] = payload[:8]
+        self.pending_write_data[home_id] = self.pending_write_data[home_id] + payload[8:]
+        self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
+        return
       if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
         self.pending_requests.pop(home_id)
         busy = self.address_busy.get(request.address)

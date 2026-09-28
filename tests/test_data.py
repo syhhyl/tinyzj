@@ -1,4 +1,5 @@
 import unittest
+import random
 
 from tinyzj.chi import Channel, DatOpcode, RespErr
 from tinyzj.data import DataAssembly, data_check, packets
@@ -7,6 +8,40 @@ from tinyzj.zj import Zhujiang
 
 
 class DataTest(unittest.TestCase):
+
+  def test_seeded_byte_line_scoreboard(self):
+    for width in (16, 32, 64):
+      rng = random.Random(20260928 + width)
+      system = Zhujiang(data_width=width, buffer_capacity=2, id_capacity=1,
+                        retry_enabled=True, credit_return_delay=3)
+      expected = {address: bytes(64) for address in (0, 64, 128)}
+      for address, value in expected.items():
+        system.s.dj.write(address, value)
+      for _ in range(150):
+        address = rng.choice(list(expected))
+        cc = rng.choice((system.cc0, system.cc1))
+        request = cc.read_unique(address)
+        system.run_until_idle(1000)
+        actual = cc.cache[address][1] if request is None else cc.read_response_for(request).payload
+        self.assertEqual(expected[address], actual)
+        value = bytes(rng.randrange(256) for _ in range(64))
+        cc.store_cached(address, value)
+        expected[address] = value
+        cc.writeback(address)
+        system.run_until_idle(1000)
+        system.hf.evict(address)
+        system.run_until_idle(1000)
+        mask = rng.getrandbits(64)
+        value = bytes(rng.randrange(256) for _ in range(64))
+        cc.write_no_snp_partial(address, value, mask)
+        system.run_until_idle(1000)
+        expected[address] = bytes(value[i] if mask & (1 << i) else expected[address][i]
+                                  for i in range(64))
+        self.assertEqual(expected, system.s.dj.data_by_address)
+        for endpoint in (system.cc0, system.cc1, system.hf, system.s):
+          self.assertFalse(endpoint.data_assembly.pending)
+        self.assertFalse(system.hf.address_busy)
+        self.assertFalse(system.hf.pending_write_errors)
 
   def test_odd_byte_parity_detects_corrupted_packet(self):
     self.assertEqual(0b1001, data_check(bytes((0, 1, 2, 3))))
