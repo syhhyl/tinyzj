@@ -1,10 +1,15 @@
-from .chi import Channel, DatOpcode, ReqOpcode, RspOpcode
+from .chi import Channel, DatOpcode, ReqOpcode, Resp, RespErr, RspOpcode
 from .dj import DongJiang
 from .xj import Message, Ring, RingNode
 
 class Zhujiang:
   
-  def __init__(self, buffer_capacity=None, max_transactions=None):
+  def __init__(
+    self,
+    buffer_capacity=None,
+    max_transactions=None,
+    error_addresses=None,
+  ):
     self.ring = Ring([
       RingNode("n00", "CC0"),
       RingNode("n01", "HF"),
@@ -20,7 +25,11 @@ class Zhujiang:
       max_transactions=max_transactions,
     )
     self.cc1 = Socket(self.ring, "n11", "n01")
-    self.s = StorageWrapper(self.ring, "n10")
+    self.s = StorageWrapper(
+      self.ring,
+      "n10",
+      error_addresses=error_addresses,
+    )
 
     self.ring.connect("n00", self.cc0)
     self.ring.connect("n01", self.hf)
@@ -214,6 +223,8 @@ class HomeWrapper(Endpoint):
         address=message.address,
         transaction_id=request.transaction_id,
         data_present=message.data_present,
+        resp_err=message.resp_err,
+        resp=Resp.I,
         channel=Channel.DAT,
         opcode=DatOpcode.COMP_DATA,
       )
@@ -256,6 +267,7 @@ class HomeWrapper(Endpoint):
         self.node_name,
         request.source_name,
         transaction_id=request.transaction_id,
+        resp_err=message.resp_err,
         channel=Channel.RSP,
         opcode=RspOpcode.COMP,
       )
@@ -264,10 +276,11 @@ class HomeWrapper(Endpoint):
 
 class StorageWrapper(Endpoint):
 
-  def __init__(self, ring, node_name):
+  def __init__(self, ring, node_name, error_addresses=None):
     super().__init__()
     self.ring = ring
     self.node_name = node_name
+    self.error_addresses = set(error_addresses or ())
     self.dj = DongJiang()
     self.pending_writes = {}
     self.next_dbid = 0
@@ -286,6 +299,10 @@ class StorageWrapper(Endpoint):
         address=message.address,
         transaction_id=message.transaction_id,
         data_present=data_present,
+        resp_err=(
+          RespErr.DERR if message.address in self.error_addresses else RespErr.OK
+        ),
+        resp=Resp.UC,
         channel=Channel.DAT,
         opcode=DatOpcode.COMP_DATA,
       )
@@ -311,11 +328,17 @@ class StorageWrapper(Endpoint):
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
     ):
       request = self.pending_writes.pop(message.transaction_id)
-      self.dj.write(request.address, message.payload)
+      if request.address not in self.error_addresses:
+        self.dj.write(request.address, message.payload)
       response = Message(
         self.node_name,
         message.source_name,
         transaction_id=request.transaction_id,
+        resp_err=(
+          RespErr.NDERR
+          if request.address in self.error_addresses
+          else RespErr.OK
+        ),
         channel=Channel.RSP,
         opcode=RspOpcode.COMP,
       )

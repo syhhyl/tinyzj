@@ -1,6 +1,6 @@
 import unittest
 
-from tinyzj.chi import Channel, DatOpcode, ReqOpcode, RspOpcode
+from tinyzj.chi import Channel, DatOpcode, ReqOpcode, Resp, RespErr, RspOpcode
 from tinyzj.xj import Message
 from tinyzj.zj import Zhujiang
 
@@ -315,6 +315,50 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual({}, zhujiang.cc0.pending_write_data)
     self.assertEqual({}, zhujiang.cc1.pending_write_data)
     self.assertEqual([], zhujiang.ring.in_flight)
+
+  def test_normal_read_and_write_carry_ok_resp_err_and_resp_states(self):
+    zhujiang = Zhujiang()
+    read_request = zhujiang.cc0.read("0x1000")
+    write_request = zhujiang.cc0.write("0x2000", "value 2")
+
+    zhujiang.run_until_idle()
+
+    read_response = zhujiang.cc0.read_response_for(read_request)
+    self.assertEqual(RespErr.OK, read_response.resp_err)
+    self.assertEqual(Resp.I, read_response.resp)
+    storage_comp_data = [
+      message
+      for message in zhujiang.hf.received_messages
+      if message.channel == Channel.DAT and message.opcode == DatOpcode.COMP_DATA
+    ][0]
+    self.assertEqual(Resp.UC, storage_comp_data.resp)
+    write_response = zhujiang.cc0.write_response_for(write_request)
+    self.assertEqual(RespErr.OK, write_response.resp_err)
+
+  def test_error_address_read_returns_derr(self):
+    zhujiang = Zhujiang(error_addresses={"0x1000"})
+    request = zhujiang.cc0.read("0x1000")
+
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc0.read_response_for(request)
+    self.assertEqual(RespErr.DERR, response.resp_err)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.s.pending_writes)
+
+  def test_error_address_write_returns_nderr_and_skips_storage(self):
+    zhujiang = Zhujiang(error_addresses={"0x1000"})
+    request = zhujiang.cc0.write("0x1000", "value 1")
+
+    zhujiang.run_until_idle()
+
+    response = zhujiang.cc0.write_response_for(request)
+    self.assertEqual(RespErr.NDERR, response.resp_err)
+    self.assertNotIn("0x1000", zhujiang.s.dj.data_by_address)
+    self.assertEqual({}, zhujiang.cc0.pending_write_data)
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_write_data)
+    self.assertEqual({}, zhujiang.s.pending_writes)
 
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()

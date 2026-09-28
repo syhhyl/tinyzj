@@ -23,6 +23,8 @@ class Message:
     channel=None,
     opcode=None,
     dbid=None,
+    resp_err="OK",
+    resp=None,
   ):
     if not source_name:
       raise ValueError("message source needs a name")
@@ -39,6 +41,8 @@ class Message:
     self.data_present = data_present
     self.channel = channel
     self.opcode = opcode
+    self.resp_err = resp_err
+    self.resp = resp
 
 class Injection:
 

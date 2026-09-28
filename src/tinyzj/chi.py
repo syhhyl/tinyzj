@@ -22,3 +22,17 @@ class DatOpcode:
 
   COMP_DATA = "CompData"
   NON_COPY_BACK_WRITE_DATA = "NonCopyBackWriteData"
+
+
+class RespErr:
+
+  OK = "OK"
+  EXOK = "EXOK"
+  DERR = "DERR"
+  NDERR = "NDERR"
+
+
+class Resp:
+
+  UC = "UC"
+  I = "I"
