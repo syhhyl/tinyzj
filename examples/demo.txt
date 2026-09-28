@@ -1,4 +1,32 @@
-# CC0 写入
+# 所有请求在一次 Enter 后同时发起；之后每次 Enter 推进一步
+# 同地址并发读写：观察队列、HF 背压和事务串行处理
 write A hello cc0
-# CC1 读取
 read A cc1
+
+read A cc0
+
+# 重复读取也同批发起，此时尚未填充缓存
+read A cc0
+read A cc1
+
+# 同一地址的第二次写入
+write A updated cc0
+
+read A cc1
+read A cc0
+
+# 多地址并发写入，以及读取未写入的 D
+write B bravo cc0
+write C charlie cc1
+read D cc0
+
+# 跨端读取 B/C，同时再次写 A
+read B cc1
+read C cc0
+write A final cc1
+
+# 并发读取的返回值取决于 HF 实际接受顺序，而非文件行号
+read A cc0
+read A cc1
+read B cc1
+read C cc0

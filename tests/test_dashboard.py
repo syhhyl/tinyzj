@@ -10,7 +10,26 @@ from tinyzj.dashboard import Dashboard, main
 
 class DashboardTest(unittest.TestCase):
 
-  def test_viewport_fits_small_terminal_and_pages_without_advancing(self):
+  def test_footer_layout_and_command_response_completion(self):
+    dashboard = Dashboard()
+    request = dashboard.write("A", "hello")
+    entry = {"words": ["write", "A", "hello"], "text": "write A hello",
+             "state": "active", "request": request, "cc": "cc0"}
+    dashboard.commands = [entry]
+    view = dashboard.render()
+    self.assertGreater(view.index("命令列表"), view.rindex("╰"))
+    headings = next(line for line in view.splitlines() if "命令列表" in line)
+    self.assertIn("Memory · S", headings)
+    self.assertIn("▶ 执行中", view)
+    for _ in range(100):
+      if not dashboard.system.ring.in_flight:
+        break
+      dashboard.step()
+    self.assertEqual("done", entry["state"])
+    self.assertIn("✓ 已完成", dashboard.render())
+    self.assertIn("'A' = 'hello'", dashboard.render())
+
+  def test_viewport_fits_single_screen_without_advancing(self):
     dashboard = Dashboard()
     dashboard.read("A")
     text = dashboard.render(color=True)
@@ -21,8 +40,9 @@ class DashboardTest(unittest.TestCase):
       self.assertLessEqual(sum(
         2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in line
       ), 39)
-    dashboard.page += 1
-    self.assertNotEqual(first, dashboard.viewport(text, 40, 12))
+    self.assertNotIn("Page ", plain)
+    self.assertNotIn("n/p", plain)
+    self.assertEqual(first, dashboard.viewport(text, 40, 12))
     self.assertEqual(0, dashboard.steps)
 
   def test_script_eof_fails_with_outstanding_work(self):
@@ -86,7 +106,7 @@ class DashboardTest(unittest.TestCase):
     self.assertEqual(0, dashboard.steps)
     self.assertIn("REQ · ReadShared", initial)
     self.assertIn("TxnID=0", initial)
-    self.assertLess(initial.index("REQ · ReadShared"), initial.index("╭"))
+    self.assertGreater(initial.index("REQ · ReadShared"), initial.index("╭"))
     moved = dashboard.step()
     self.assertGreater(moved.index("REQ · ReadShared"), moved.index("╭"))
     self.assertIsNone(dashboard.system.cc0.read_response_for(request))
@@ -154,7 +174,28 @@ class DashboardTest(unittest.TestCase):
     self.assertIn("TxnID=0", second)
     self.assertEqual(2, dashboard.steps)
 
-  def test_blocked_request_stays_in_router_at_endpoint_interface(self):
+  def test_new_request_is_inside_source_node(self):
+    dashboard = Dashboard()
+    dashboard.write("A", "value")
+    view = dashboard.render()
+    self.assertLess(view.index("Node CC0"), view.index("REQ · WriteNoSnpFull"))
+    self.assertLess(view.index("REQ · WriteNoSnpFull"), view.index("╰"))
+    self.assertEqual(0, dashboard.steps)
+    self.assertFalse(dashboard.system.ring.in_flight[0].in_ring)
+
+  def test_node_expands_and_messages_use_single_colored_rows(self):
+    dashboard = Dashboard()
+    for index in range(12):
+      dashboard.read(str(index))
+    view = dashboard.render(color=True)
+    self.assertNotIn("more", view)
+    for index in range(12):
+      self.assertIn(f"REQ · ReadShared  TxnID={index}", view)
+    rows = [line for line in view.splitlines() if "REQ · ReadShared" in line]
+    self.assertEqual(12, len(rows))
+    self.assertTrue(all("\033[36m" in line for line in rows))
+
+  def test_blocked_request_is_displayed_outside_node(self):
     dashboard = Dashboard(max_transactions=1)
     dashboard.write("A", "value", cc="cc0")
     dashboard.read("B", cc="cc1")
@@ -162,10 +203,11 @@ class DashboardTest(unittest.TestCase):
     before = len(dashboard.system.ring.in_flight)
     view = dashboard.render()
     self.assertIn("TxnID=0  WAIT", view)
-    self.assertIn("× WAIT", view)
+    self.assertNotIn("× WAIT", view)
     self.assertIn("REQ · ReadShared", view)
-    self.assertGreater(view.index("REQ · ReadShared"), view.index("╭"))
-    self.assertEqual(4, view.count("Router"))
+    self.assertLess(view.index("REQ · ReadShared"), view.index("╭"))
+    self.assertNotIn("接收等待区", view)
+    self.assertEqual(4, view.count("Node "))
     self.assertEqual(before, len(dashboard.system.ring.in_flight))
     for _ in range(100):
       if not dashboard.system.ring.in_flight:
