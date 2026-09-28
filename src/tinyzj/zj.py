@@ -78,7 +78,6 @@ class Socket(Endpoint):
     self.home_name = home_name
     self._responses = {}
     self.cache = {}
-    self.no_cache = set()
     self.pending_write_data = {}
     self.next_transaction_id = 0
 
@@ -96,7 +95,6 @@ class Socket(Endpoint):
       raise ValueError("read request needs an address")
     if address in self.cache:
       return None
-    self.no_cache.discard(address)
     return self._send_request(
       address=address,
       channel=Channel.REQ,
@@ -108,7 +106,6 @@ class Socket(Endpoint):
       raise ValueError("read request needs an address")
     if address in self.cache and self.cache[address][0] == Resp.UC:
       return None
-    self.no_cache.discard(address)
     return self._send_request(
       address=address,
       channel=Channel.REQ,
@@ -163,10 +160,7 @@ class Socket(Endpoint):
       key = (message.channel, message.opcode, message.transaction_id)
       self._responses[key] = message
       if message.resp in (Resp.SC, Resp.UC):
-        if (
-          message.resp_err == RespErr.OK
-          and message.address not in self.no_cache
-        ):
+        if message.resp_err == RespErr.OK:
           self.cache[message.address] = (message.resp, message.payload)
         self.ring.inject(
           Message(
@@ -198,7 +192,6 @@ class Socket(Endpoint):
       and message.opcode == SnpOpcode.SNP_UNIQUE
     ):
       self.cache.pop(message.address, None)
-      self.no_cache.add(message.address)
       self.ring.inject(
         Message(
           self.node_name,
@@ -245,7 +238,7 @@ class HomeWrapper(Endpoint):
     self.pending_requests = {}
     self.pending_comp_acks = {}
     self.directory = {}
-    self.active_reads = {}
+    self.address_busy = {}
     self.pending_snoops = {}
     self.pending_write_data = {}
     self.next_home_id = 0
@@ -253,10 +246,7 @@ class HomeWrapper(Endpoint):
   def can_receive(self, message):
     if message.channel != Channel.REQ:
       return True
-    if any(
-      entry["address"] == message.address
-      for entry in self.pending_snoops.values()
-    ):
+    if self.address_busy.get(message.address):
       return False
     if self.max_transactions is None:
       return True
@@ -274,10 +264,7 @@ class HomeWrapper(Endpoint):
       home_id = self.next_home_id
       self.next_home_id += 1
       self.pending_requests[home_id] = message
-      self.active_reads.setdefault(message.address, {})[home_id] = {
-        "request": message,
-        "invalidated": False,
-      }
+      self.address_busy.setdefault(message.address, set()).add(home_id)
       holders = set(self.directory.get(message.address, {}))
       snoop_opcode = {
         ReqOpcode.READ_SHARED: SnpOpcode.SNP_SHARED,
@@ -325,9 +312,8 @@ class HomeWrapper(Endpoint):
       home_id = self.next_home_id
       self.next_home_id += 1
       self.pending_requests[home_id] = message
+      self.address_busy.setdefault(message.address, set()).add(home_id)
       holders = set(self.directory.get(message.address, {}))
-      for entry in self.active_reads.get(message.address, {}).values():
-        holders.add(entry["request"].source_name)
       if holders:
         self.pending_snoops[home_id] = {
           "address": message.address,
@@ -337,9 +323,6 @@ class HomeWrapper(Endpoint):
         }
         for holder_name in holders:
           self.directory.get(message.address, {}).pop(holder_name, None)
-          for entry in self.active_reads.get(message.address, {}).values():
-            if entry["request"].source_name == holder_name:
-              entry["invalidated"] = True
           self.ring.inject(
             Message(
               self.node_name,
@@ -428,11 +411,13 @@ class HomeWrapper(Endpoint):
         (message.source_name, message.transaction_id)
       )
       self.pending_requests.pop(home_id, None)
-      entry = self.active_reads.get(address, {}).pop(home_id, None)
-      if entry is not None and not entry["invalidated"] and resp_err == RespErr.OK:
+      if resp_err == RespErr.OK:
         self.directory.setdefault(address, {})[message.source_name] = state
-      if not self.active_reads.get(address):
-        self.active_reads.pop(address, None)
+      busy = self.address_busy.get(address)
+      if busy is not None:
+        busy.discard(home_id)
+        if not busy:
+          self.address_busy.pop(address, None)
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA
@@ -467,6 +452,11 @@ class HomeWrapper(Endpoint):
     ):
       request = self.pending_requests.pop(message.transaction_id)
       self.pending_write_data.pop(message.transaction_id)
+      busy = self.address_busy.get(request.address)
+      if busy is not None:
+        busy.discard(message.transaction_id)
+        if not busy:
+          self.address_busy.pop(request.address, None)
       response = Message(
         self.node_name,
         request.source_name,
