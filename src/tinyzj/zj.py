@@ -12,9 +12,10 @@ from .chi import (
 from .dj import DongJiang
 from .data import DataAssembly, packets
 from .xj import Message, Ring, RingNode
+from .atomic import OPERATIONS, LOAD_OPCODES, STORE_OPCODES, calculate
 
 
-ATOMIC_OPCODES = (ReqOpcode.ATOMIC_SWAP, ReqOpcode.ATOMIC_COMPARE)
+ATOMIC_OPCODES = (ReqOpcode.ATOMIC_SWAP, ReqOpcode.ATOMIC_COMPARE) + LOAD_OPCODES + STORE_OPCODES
 WRITE_DATA_OPCODES = (
   ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL,
   ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL,
@@ -133,6 +134,7 @@ class Socket(Endpoint):
     self.waiting_write_data = {}
     self.request_states = {}
     self.write_completions = {}
+    self.atomic_completions = {}
     self.write_data_sent = set()
     self.retry_requests = {}
     self.protocol_credits = {}
@@ -199,18 +201,36 @@ class Socket(Endpoint):
     return self._write(address, data, ReqOpcode.WRITE_NO_SNP_FULL)
 
   def atomic_swap(self, address, value):
-    if type(address) is not int or address < 0 or address % 64:
-      raise ValueError("atomic swap requires an aligned line address")
-    if not isinstance(value, bytes) or len(value) != 8:
-      raise ValueError("atomic swap operand must be 8 bytes")
-    return self._write(address, value, ReqOpcode.ATOMIC_SWAP)
+    return self._atomic_request(address, value, ReqOpcode.ATOMIC_SWAP)
 
   def atomic_compare(self, address, compare, replacement):
-    if type(address) is not int or address < 0 or address % 64:
-      raise ValueError("atomic compare requires an aligned line address")
-    if any(not isinstance(value, bytes) or len(value) != 8 for value in (compare, replacement)):
-      raise ValueError("atomic compare operands must each be 8 bytes")
-    return self._write(address, compare + replacement, ReqOpcode.ATOMIC_COMPARE)
+    if not isinstance(compare, bytes) or not isinstance(replacement, bytes) or len(compare) != len(replacement):
+      raise ValueError("atomic compare operands must be equally sized bytes")
+    return self._atomic_request(address, compare + replacement, ReqOpcode.ATOMIC_COMPARE,
+                                operand_size=len(compare))
+
+  def _atomic_request(self, address, value, opcode, operand_size=None):
+    size = operand_size if operand_size is not None else len(value) if isinstance(value, bytes) else 0
+    allowed = (1, 2, 4, 8, 16) if opcode == ReqOpcode.ATOMIC_COMPARE else (1, 2, 4, 8)
+    if size not in allowed or not isinstance(value, bytes):
+      raise ValueError("unsupported atomic operand size")
+    if type(address) is not int or address < 0 or address % size:
+      raise ValueError("atomic address must be naturally aligned")
+    request = self._write(address - address % 64, value, opcode)
+    request.byte_offset = address % 64
+    request.size = len(value).bit_length() - 1
+    return request
+
+  def atomic_load(self, address, operation, value):
+    return self._atomic_arithmetic(address, operation, value, "AtomicLoad")
+
+  def atomic_store(self, address, operation, value):
+    return self._atomic_arithmetic(address, operation, value, "AtomicStore")
+
+  def _atomic_arithmetic(self, address, operation, value, prefix):
+    if operation not in OPERATIONS:
+      raise ValueError("unsupported atomic operation")
+    return self._atomic_request(address, value, prefix + operation)
 
   def write_no_snp_partial(self, address, data, byte_enable):
     if type(address) is not int or address < 0 or address % 64:
@@ -308,6 +328,16 @@ class Socket(Endpoint):
     self.pending_write_data.pop(txn_id)
     self.request_states[request] = "complete"
 
+  def _finish_atomic_read(self, txn_id):
+    if txn_id not in self.write_data_sent or txn_id not in self.atomic_completions:
+      return
+    request = self.active_requests.pop(txn_id)
+    response = self.atomic_completions.pop(txn_id)
+    self._responses[(Channel.DAT, DatOpcode.COMP_DATA, request)] = response
+    self.pending_write_data.pop(txn_id)
+    self.write_data_sent.remove(txn_id)
+    self.request_states[request] = "complete"
+
   def receive(self, message):
     message = super().receive(message)
     if message is None:
@@ -325,6 +355,10 @@ class Socket(Endpoint):
       and message.opcode == DatOpcode.COMP_DATA
     ):
       request = self.active_requests[message.transaction_id]
+      if request.opcode in ATOMIC_OPCODES and request.opcode not in STORE_OPCODES:
+        self.atomic_completions[message.transaction_id] = message
+        self._finish_atomic_read(message.transaction_id)
+        return
       key = (message.channel, message.opcode, request)
       self._responses[key] = message
       if request.exp_comp_ack:
@@ -410,6 +444,7 @@ class Socket(Endpoint):
       request = self.active_requests[message.transaction_id]
       self.request_states[request] = "await_comp"
       self._finish_write(message.transaction_id)
+      self._finish_atomic_read(message.transaction_id)
     elif (
       message.channel == Channel.RSP
       and message.opcode == RspOpcode.COMP
@@ -489,10 +524,7 @@ class HomeWrapper(Endpoint):
         self.dirty_data.pop(request.address, None)
         self.dirty_errors.pop(request.address, None)
       self.address_busy.pop(request.address)
-      self.send(Message(self.node_name, request.source_name, address=request.address,
-                        transaction_id=request.transaction_id, payload=old,
-                        channel=Channel.DAT, opcode=DatOpcode.COMP_DATA,
-                        resp_err=completion.resp_err, resp=Resp.I))
+      self._send_atomic_result(request, old, completion.resp_err)
       return
     if completion.resp_err == RespErr.OK and request.opcode == ReqOpcode.WRITE_UNIQUE_FULL:
       self.dirty_data.pop(request.address, None)
@@ -517,6 +549,14 @@ class HomeWrapper(Endpoint):
       channel=Channel.RSP,
       opcode=RspOpcode.COMP,
     ))
+
+  def _send_atomic_result(self, request, old, error):
+    store = request.opcode in STORE_OPCODES
+    self.send(Message(self.node_name, request.source_name, address=request.address,
+                      transaction_id=request.transaction_id, payload=None if store else old,
+                      channel=Channel.RSP if store else Channel.DAT,
+                      opcode=RspOpcode.COMP if store else DatOpcode.COMP_DATA,
+                      resp_err=error, resp=Resp.I))
 
   def _send_write_dbid(self, home_id):
     request = self.pending_requests[home_id]
@@ -772,26 +812,29 @@ class HomeWrapper(Endpoint):
           self.pending_write_data.pop(home_id)
           self.pending_write_errors.pop(home_id, None)
           self.address_busy.pop(address)
-          self.send(Message(self.node_name, request.source_name, address=address,
-                            transaction_id=request.transaction_id,
-                            channel=Channel.DAT, opcode=DatOpcode.COMP_DATA,
-                            resp_err=RespErr.DERR, resp=Resp.I))
+          self._send_atomic_result(request, None, RespErr.DERR)
           return
         operand = self.pending_write_data[home_id]
+        size = (1 << request.size) // (2 if request.opcode == ReqOpcode.ATOMIC_COMPARE else 1)
+        offset = request.byte_offset
+        old = payload[offset:offset + size]
+        if request.opcode in LOAD_OPCODES + STORE_OPCODES:
+          operation = request.opcode.removeprefix("AtomicLoad").removeprefix("AtomicStore")
+          operand = calculate(operation, old, operand)
         if request.opcode == ReqOpcode.ATOMIC_COMPARE:
-          if operand[:8] != payload[:8]:
+          if operand[:size] != old:
             self.pending_requests.pop(home_id)
             self.pending_write_data.pop(home_id)
             self.pending_write_errors.pop(home_id, None)
             self.address_busy.pop(address)
             self.send(Message(self.node_name, request.source_name, address=address,
-                              transaction_id=request.transaction_id, payload=payload[:8],
+                              transaction_id=request.transaction_id, payload=old,
                               channel=Channel.DAT, opcode=DatOpcode.COMP_DATA,
                               resp_err=RespErr.OK, resp=Resp.I))
             return
-          operand = operand[8:]
-        self.atomic_results[home_id] = payload[:8]
-        self.pending_write_data[home_id] = operand + payload[8:]
+          operand = operand[size:]
+        self.atomic_results[home_id] = old
+        self.pending_write_data[home_id] = payload[:offset] + operand + payload[offset + size:]
         self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
         return
       if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):

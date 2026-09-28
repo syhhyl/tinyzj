@@ -14,7 +14,7 @@
 | 非一致性部分写 | 对齐 64-byte Normal memory 窗口及 BE；`test_data.py` | 子行 Size、Device memory、WriteUniquePtl |
 | 多包 DAT | 64-byte 行、128/256/512-bit 宽度、DataID 重排收齐；`test_data.py` | 任意子行窗口、DataSepResp/RespSepData、压缩 |
 | 错误 | RespErr、Poison→DERR、奇字节校验；`test_data.py` | 持久 Poison 存储、所有 snoop/error 状态组合 |
-| Atomic | 行首 8-byte AtomicSwap/AtomicCompare、HF 地址锁内读改写，双 RN dirty 冲突及比较单赢家；`test_atomic.py` | 任意对齐 offset、其他大小、AtomicLoad/Store、提前 CompData、子行线上编码 |
+| Atomic | 自然对齐 AtomicSwap/Compare、八种 AtomicLoad/Store；1/2/4/8-byte，Compare 另支持16-byte；HF 行锁、signed/unsigned、并发 fetch-add、提前 CompData；`test_atomic.py` | 子行线上字节位置、Endian 字段 |
 | Exclusive | 未实现 | monitor、成功/失败与失效关联 |
 | Cache maintenance | 未实现 | Clean/Invalidate/同步完成与持久化 |
 | DVM | 未实现 | 广播、同步与完成序列 |

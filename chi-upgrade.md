@@ -45,6 +45,10 @@
 
 ## 执行记录
 
+- F3 验收：119 测试和三个示例通过。另修复 AtomicLoad/Swap/Compare 的 CompData 先于 DBIDResp 时过早回收 RN ID/操作数问题；只有返回数据收齐和操作数提交都完成才发布结果，增加人工响应重排测试（B2.3.3 允许先回 CompData）。
+
+- F3/E6：实现 AtomicLoad/AtomicStore 的 ADD/CLR/EOR/SET/SMAX/SMIN/UMAX/UMIN，明确 little-endian 整数计算、截断溢出、signed 比较以及 CompData/Comp 不同完成通道。原子 API 支持自然对齐的 1/2/4/8-byte 操作，Compare 另支持 16-byte 值；内部地址按 64-byte 行归一化，保留 byte_offset 与 Size（Compare 为两个操作数总长）。依据 IHI0050 G B4.2 pp.210–212 与 B2.8.6 pp.162–163。增加运算边界向量、40 次双 RN fetch-add 线性化、行尾 offset/size 组合验证。仍未编码子行 DAT 自然字节位置和 Endian 字段，不声明完整原子线上合规。
+
 - F2：新增行首 8-byte `atomic_compare(address, compare, replacement)`；比较成功更新并返回旧值，失败只返回旧值且不产生下游写。沿用原子地址锁、dirty snoop 和错误保留路径。依据 IHI0050 G B4.2 pp.211–212 与 B2.3.3 p.82；仍为受限行为 API，未扩展子行线上编码。新增双 RN 单赢家、比较不匹配、读错误、下游写错误及输入检查。
 
 - F1：实现受限 `atomic_swap(line_address, bytes8)`，只允许 64-byte 对齐地址的前 8 字节；HF 先失效持有者，按 DBIDResp→操作数→CompData 顺序在同一地址锁内读取旧行并更新前 8 字节，返回旧值。核对 IHI0050 G B2.3.3 p.82；数据值操作已建模，子行 Size/自然字节位置线上编码仍待 E 完善。111 测试通过，含两个 RN 竞争 dirty 行的线性顺序验证。不是完整 Atomic 功能覆盖。
