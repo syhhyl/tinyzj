@@ -46,16 +46,38 @@ class Injection:
     self.message = message
     self.current_node_name = message.source_name
     self.direction = None
+    self.in_ring = False
 
 
 
 class Ring:
 
-  def __init__(self, nodes):
+  def __init__(self, nodes, buffer_capacity=None):
     self.nodes = list(nodes)
     if len(self.nodes) < 3:
       raise ValueError("ring needs at least three nodes")
+
+    self.buffer_capacity = buffer_capacity
+    if buffer_capacity is not None:
+      if not isinstance(buffer_capacity, int) or buffer_capacity < 2:
+        raise ValueError("buffer_capacity must be an integer >= 2")
     
+    self.source_queues = {
+      node.name: {
+        channel: []
+        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ)
+      }
+      for node in self.nodes
+    }
+    self.ring_buffers = {
+      node.name: {
+        (direction, channel): []
+        for direction in (-1, 1)
+        for channel in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ)
+      }
+      for node in self.nodes
+    }
+
     self.connections = {}
     for node in self.nodes:
       if node.name in self.connections:
@@ -85,17 +107,25 @@ class Ring:
     raise ValueError(f"unknown ring node: {node_name}")
     
   def inject(self, message):
-    if message.channel not in (Channel.REQ, Channel.RSP, Channel.DAT, Channel.ERQ):
+    if message.channel not in (
+      Channel.REQ,
+      Channel.RSP,
+      Channel.DAT,
+      Channel.ERQ,
+    ):
       raise ValueError("message needs a known channel")
     self._node_index(message.source_name)
     self._node_index(message.target_name)
 
     injection = Injection(message)
+    self.source_queues[message.source_name][message.channel].append(injection)
     if message.source_name != message.target_name:
       path = self.path_from(message.source_name, message.target_name)
       source_index = self._node_index(message.source_name)
       next_index = self._node_index(path[1].name)
-      injection.direction = 1 if next_index == (source_index + 1) % len(self.nodes) else -1
+      injection.direction = (
+        1 if next_index == (source_index + 1) % len(self.nodes) else -1
+      )
     self.in_flight.append(injection)
     return injection
 
@@ -115,13 +145,17 @@ class Ring:
       index = (index + direction) % len(self.nodes)
 
   def step(self):
-    in_flight = list(self.in_flight)
+    initial = list(self.in_flight)
+    buffer_occupancy = {
+      (node_name, direction, channel): len(buffer)
+      for node_name, buffers in self.ring_buffers.items()
+      for (direction, channel), buffer in buffers.items()
+    }
     arrived = [
       injection
-      for injection in in_flight
+      for injection in initial
       if injection.current_node_name == injection.message.target_name
     ]
-    moving = [injection for injection in in_flight if injection not in arrived]
     receivers = []
     for injection in arrived:
       receiver = self.connections[injection.current_node_name]
@@ -139,12 +173,26 @@ class Ring:
       receiver.receive(injection.message)
 
     new_injections = [
-      injection for injection in self.in_flight if injection not in in_flight
+      injection for injection in self.in_flight if injection not in initial
     ]
-    self.in_flight = moving + new_injections
+    for injection in arrived:
+      message = injection.message
+      if injection.in_ring:
+        self.ring_buffers[injection.current_node_name][
+          (injection.direction, message.channel)
+        ].remove(injection)
+      else:
+        self.source_queues[message.source_name][message.channel].remove(
+          injection
+        )
 
+    self.in_flight = [
+      injection for injection in initial if injection not in arrived
+    ] + new_injections
     occupied_links = set()
-    for injection in moving:
+    for injection in initial:
+      if not injection.in_ring or injection in arrived:
+        continue
       current_index = self._node_index(injection.current_node_name)
       next_index = (current_index + injection.direction) % len(self.nodes)
       link = (
@@ -154,8 +202,60 @@ class Ring:
       )
       if link in occupied_links:
         continue
+      next_node_name = self.nodes[next_index].name
+      buffer = self.ring_buffers[next_node_name][
+        (injection.direction, injection.message.channel)
+      ]
+      if (
+        self.buffer_capacity is not None
+        and buffer_occupancy[
+          (next_node_name, injection.direction, injection.message.channel)
+        ] >= self.buffer_capacity
+      ):
+        continue
       occupied_links.add(link)
-      injection.current_node_name = self.nodes[next_index].name
+      self.ring_buffers[injection.current_node_name][
+        (injection.direction, injection.message.channel)
+      ].remove(injection)
+      injection.current_node_name = next_node_name
+      buffer.append(injection)
+
+    queue_heads = []
+    seen_queues = set()
+    for injection in initial:
+      if injection.in_ring or injection in arrived:
+        continue
+      queue_key = (injection.message.source_name, injection.message.channel)
+      if queue_key in seen_queues:
+        continue
+      seen_queues.add(queue_key)
+      queue_heads.append(injection)
+
+    for injection in queue_heads:
+      current_name = injection.current_node_name
+      current_index = self._node_index(current_name)
+      next_index = (current_index + injection.direction) % len(self.nodes)
+      next_node_name = self.nodes[next_index].name
+      link = (current_name, next_node_name, injection.message.channel)
+      if link in occupied_links:
+        continue
+      occupancy_key = (
+        next_node_name,
+        injection.direction,
+        injection.message.channel,
+      )
+      if (
+        self.buffer_capacity is not None
+        and buffer_occupancy[occupancy_key] > self.buffer_capacity - 2
+      ):
+        continue
+      occupied_links.add(link)
+      self.source_queues[current_name][injection.message.channel].remove(injection)
+      injection.in_ring = True
+      injection.current_node_name = next_node_name
+      self.ring_buffers[next_node_name][
+        (injection.direction, injection.message.channel)
+      ].append(injection)
     
   
   def _node_index(self, node_name):

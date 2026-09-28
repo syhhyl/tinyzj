@@ -4,13 +4,13 @@ from .xj import Message, Ring, RingNode
 
 class Zhujiang:
   
-  def __init__(self):
+  def __init__(self, buffer_capacity=None):
     self.ring = Ring([
       RingNode("n00", "CC0"),
       RingNode("n01", "HF"),
       RingNode("n11", "CC1"),
       RingNode("n10", "S"),
-    ])
+    ], buffer_capacity=buffer_capacity)
 
     self.cc0 = Socket(self.ring, "n00", "n01")
     self.hf = HomeWrapper(self.ring, "n01", "n10")

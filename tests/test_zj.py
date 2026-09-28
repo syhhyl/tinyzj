@@ -185,6 +185,54 @@ class ZhujiangTest(unittest.TestCase):
       zhujiang.cc1.write_response_for(cc1_request).opcode,
     )
 
+  def test_finite_buffers_complete_eight_alternating_transactions(self):
+    zhujiang = Zhujiang(buffer_capacity=2)
+    expected_reads = {}
+    expected_writes = {}
+
+    for cc_name in ("cc0", "cc1"):
+      cc = getattr(zhujiang, cc_name)
+      for index in range(4):
+        read_address = f"{cc_name}-read-{index}"
+        read_data = f"{cc_name} initial {index}"
+        zhujiang.s.dj.write(read_address, read_data)
+        read_request = cc.read(read_address)
+        expected_reads[read_request] = read_data
+
+        write_address = f"{cc_name}-write-{index}"
+        write_data = f"{cc_name} written {index}"
+        write_request = cc.write(write_address, write_data)
+        expected_writes[write_request] = write_data
+
+    steps = zhujiang.run_until_idle(max_steps=500)
+    self.assertEqual(54, steps)
+
+    for cc_name in ("cc0", "cc1"):
+      cc = getattr(zhujiang, cc_name)
+      self.assertEqual(
+        8,
+        len([
+          message
+          for message in cc.received_messages
+          if message.opcode in (DatOpcode.COMP_DATA, RspOpcode.COMP)
+        ]),
+      )
+    for request, expected in expected_reads.items():
+      cc = zhujiang.cc0 if request.source_name == "n00" else zhujiang.cc1
+      self.assertEqual(expected, cc.read_response_for(request).payload)
+    for request, expected in expected_writes.items():
+      cc = zhujiang.cc0 if request.source_name == "n00" else zhujiang.cc1
+      self.assertEqual(expected, zhujiang.s.dj.data_by_address[request.address])
+      self.assertEqual(RspOpcode.COMP, cc.write_response_for(request).opcode)
+
+    self.assertEqual({}, zhujiang.hf.pending_requests)
+    self.assertEqual({}, zhujiang.hf.pending_write_data)
+    self.assertEqual({}, zhujiang.s.pending_writes)
+    self.assertEqual({}, zhujiang.cc0.pending_write_data)
+    self.assertEqual({}, zhujiang.cc1.pending_write_data)
+    self.assertEqual([], zhujiang.ring.in_flight)
+    self.assertGreater(steps, 0)
+
   def test_two_ccs_receive_only_their_own_responses(self):
     zhujiang = Zhujiang()
     cc0_request = zhujiang.cc0.read("0x1000")

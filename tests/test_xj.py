@@ -12,13 +12,21 @@ def make_ring():
   ])
 
 
-def make_square_ring():
+def make_ring_with_capacity(capacity):
+  return Ring([
+    RingNode("cc", "CPU cluster"),
+    RingNode("home", "coherent home"),
+    RingNode("io", "memory and IO"),
+  ], buffer_capacity=capacity)
+
+
+def make_square_ring(capacity=None):
   return Ring([
     RingNode("n00", "CC0"),
     RingNode("n01", "HF"),
     RingNode("n11", "CC1"),
     RingNode("n10", "S"),
-  ])
+  ], buffer_capacity=capacity)
 
 
 class RecordingEndpoint:
@@ -147,6 +155,12 @@ class InjectionTest(unittest.TestCase):
           ring.inject(Message("cc", "io", channel=channel))
     self.assertEqual([], ring.in_flight)
 
+  def test_rejects_invalid_buffer_capacity(self):
+    for capacity in (0, 1, 2.5, "2"):
+      with self.subTest(capacity=capacity):
+        with self.assertRaisesRegex(ValueError, "buffer_capacity must be an integer >= 2"):
+          make_ring_with_capacity(capacity)
+
 
 class TransportTest(unittest.TestCase):
   def test_step_moves_message_one_hop_at_a_time(self):
@@ -209,6 +223,58 @@ class TransportTest(unittest.TestCase):
     for expected in ("n00", "n01"):
       ring.step()
       self.assertEqual(expected, injection.current_node_name)
+
+  def test_bubble_rule_blocks_full_next_buffer_but_isolated_by_channel_and_direction(self):
+    ring = make_square_ring(capacity=2)
+    connect_recording_endpoints(ring)
+    waiting = ring.inject(Message("n00", "n01", channel=Channel.REQ))
+    ring.step()
+    self.assertTrue(waiting.in_ring)
+
+    blocked = ring.inject(Message("n00", "n01", channel=Channel.REQ))
+    other_channel = ring.inject(Message("n00", "n01", channel=Channel.DAT))
+    other_direction = ring.inject(Message("n11", "n01", channel=Channel.REQ))
+    ring.step()
+
+    self.assertFalse(blocked.in_ring)
+    self.assertTrue(other_channel.in_ring)
+    self.assertTrue(other_direction.in_ring)
+
+  def test_on_ring_forwarding_has_priority_over_source_injection(self):
+    ring = make_square_ring()
+    on_ring = ring.inject(Message("n10", "n01", channel=Channel.REQ))
+    ring.step()
+    self.assertEqual("n00", on_ring.current_node_name)
+
+    source_queue = ring.inject(Message("n00", "n11", channel=Channel.REQ))
+    ring.step()
+
+    self.assertEqual("n01", on_ring.current_node_name)
+    self.assertEqual("n00", source_queue.current_node_name)
+    self.assertFalse(source_queue.in_ring)
+
+  def test_buffer_snapshot_blocks_forwarding_even_when_buffer_drains(self):
+    ring = make_square_ring(capacity=2)
+    endpoints = connect_recording_endpoints(ring)
+    at_target = ring.inject(Message("n00", "n01", channel=Channel.REQ))
+    leaving = ring.inject(Message("n00", "n11", channel=Channel.REQ))
+    incoming = ring.inject(Message("n10", "n01", channel=Channel.REQ))
+
+    for injection in (at_target, leaving):
+      ring.source_queues[injection.message.source_name][Channel.REQ].remove(injection)
+      injection.in_ring = True
+      injection.current_node_name = "n01"
+      ring.ring_buffers["n01"][(1, Channel.REQ)].append(injection)
+    ring.source_queues["n10"][Channel.REQ].remove(incoming)
+    incoming.in_ring = True
+    incoming.current_node_name = "n00"
+    ring.ring_buffers["n00"][(1, Channel.REQ)].append(incoming)
+
+    ring.step()
+
+    self.assertEqual([at_target.message], endpoints["n01"].received_messages)
+    self.assertEqual("n11", leaving.current_node_name)
+    self.assertEqual("n00", incoming.current_node_name)
 
 
 class DeliveryTest(unittest.TestCase):
