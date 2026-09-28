@@ -45,6 +45,8 @@
 
 ## 执行记录
 
+- D2b：实现 `writeback(address)` → WriteBackFull → CompDBIDResp → CopyBackWriteData（IHI0050 G B2.3.2.3 pp.66–67，CAH=0 路径）。RN 在收到 DBID 时采样当前缓存状态和数据，因而在途 snoop 已转移 dirty 数据时不会用旧快照覆盖 Home；RN 提交数据后完成，HF 收到数据后释放 DBID/事务/地址锁。dirty 数据交给 Home 保存，不等价于刷入 S。96 测试及三个示例通过，包括共享/独占 snoop 与回写两种先后次序、单 ID 和 retry 的组合。
+
 - D2a：新增 UD 与显式 store_cached（仅在已有 UC/UD 所有权时允许）；SnpShared/SnpUnique 对 UD 返回 DAT/SnpRespData 并携带 pass_dirty，HF 接管最新数据至 dirty_data，从而后续一致性读不误取 S 的旧副本。成功一致性写后清除 Home dirty 副本，失败保留。94 测试通过。此增量仅覆盖 dirty 数据转交给 Home 的路径，尚无容量受限 Home cache、驱逐与 CopyBack Write；store_cached 是显式本地 CPU 操作，尚未提供与在途同地址请求的 CPU 排序语义。
 
 - D1：将教学 write() 的一致性失效行为明确为 WriteUniqueFull，新增 write_unique()/write_no_snp() 两种显式 API。HF 仅对一致性写发失效 snoop，下游仍使用 WriteNoSnpFull；显式非一致性写不会替调用者维护缓存一致性。更新原测试中的 RN→HF opcode 期望，下游期望不变；增加非一致性写不失效与一致性写失效的对照测试。92 测试通过。D2 dirty 与数据 snoop 尚未完成。

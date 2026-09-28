@@ -159,6 +159,11 @@ class Socket(Endpoint):
       raise ValueError("cached store requires unique ownership")
     self.cache[address] = (Resp.UD, data)
 
+  def writeback(self, address):
+    if address not in self.cache:
+      raise ValueError("writeback requires a cached line")
+    return self._write(address, self.cache[address][1], ReqOpcode.WRITE_BACK_FULL)
+
   def write(self, address, data):
     return self.write_unique(address, data)
 
@@ -216,7 +221,7 @@ class Socket(Endpoint):
         retry.pcrd_type = credit_key[1]
         self.ring.inject(retry)
         self.retry_requests.pop(txn_id)
-        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL) else "await_data"
+        self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
     while self.waiting_requests:
       if self.id_capacity is not None and len(self.active_requests) >= self.id_capacity:
         break
@@ -224,7 +229,7 @@ class Socket(Endpoint):
       txn_id = allocate_id(self, "next_transaction_id", self.active_requests)
       request.transaction_id = txn_id
       self.active_requests[txn_id] = request
-      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL) else "await_data"
+      self.request_states[request] = "await_dbid" if request.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL) else "await_data"
       if request in self.waiting_write_data:
         self.pending_write_data[txn_id] = self.waiting_write_data.pop(request)
       self.ring.inject(request)
@@ -324,13 +329,18 @@ class Socket(Endpoint):
       and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
     ):
       data = self.pending_write_data[message.transaction_id]
+      request = self.active_requests[message.transaction_id]
+      copyback = request.opcode == ReqOpcode.WRITE_BACK_FULL
+      if copyback:
+        state, data = self.cache.pop(request.address, (Resp.I, None))
       write_data = Message(
         self.node_name,
         message.source_name,
         payload=data,
         transaction_id=message.dbid,
         channel=Channel.DAT,
-        opcode=DatOpcode.NON_COPY_BACK_WRITE_DATA,
+        opcode=DatOpcode.COPY_BACK_WRITE_DATA if copyback else DatOpcode.NON_COPY_BACK_WRITE_DATA,
+        resp=state if copyback else None,
       )
       self.ring.inject(write_data)
       self.write_data_sent.add(message.transaction_id)
@@ -413,7 +423,7 @@ class HomeWrapper(Endpoint):
       transaction_id=request.transaction_id,
       dbid=dbid,
       channel=Channel.RSP,
-      opcode=RspOpcode.DBID_RESP,
+      opcode=RspOpcode.COMP_DBID_RESP if request.opcode == ReqOpcode.WRITE_BACK_FULL else RspOpcode.DBID_RESP,
     ))
 
   def _send_storage_request(self, home_id, opcode):
@@ -519,7 +529,7 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL)
+      and message.opcode in (ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL)
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
@@ -586,6 +596,21 @@ class HomeWrapper(Endpoint):
         busy.discard(home_id)
         if not busy:
           self.address_busy.pop(address, None)
+    elif (
+      message.channel == Channel.DAT
+      and message.opcode == DatOpcode.COPY_BACK_WRITE_DATA
+    ):
+      home_id = self.write_dbids.pop(message.transaction_id)
+      request = self.pending_requests.pop(home_id)
+      if message.resp == Resp.UD:
+        self.dirty_data[request.address] = message.payload
+      holders = self.directory.get(request.address, {})
+      holders.pop(request.source_name, None)
+      if not holders:
+        self.directory.pop(request.address, None)
+      self.address_busy[request.address].discard(home_id)
+      if not self.address_busy[request.address]:
+        del self.address_busy[request.address]
     elif (
       message.channel == Channel.DAT
       and message.opcode == DatOpcode.NON_COPY_BACK_WRITE_DATA

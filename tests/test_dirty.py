@@ -6,6 +6,48 @@ from tinyzj.zj import Zhujiang
 
 class DirtyDataTest(unittest.TestCase):
 
+  def test_writeback_and_snoop_races_preserve_latest_value(self):
+    for unique in (False, True):
+      for writeback_first in (False, True):
+        with self.subTest(unique=unique, writeback_first=writeback_first):
+          system = Zhujiang(buffer_capacity=2, id_capacity=1, retry_enabled=True)
+          system.s.dj.write("A", "old")
+          system.cc0.read_unique("A")
+          system.run_until_idle()
+          system.cc0.store_cached("A", "latest")
+          read = system.cc1.read_unique if unique else system.cc1.read_shared
+          if writeback_first:
+            wb = system.cc0.writeback("A")
+            request = read("A")
+          else:
+            request = read("A")
+            for _ in range(3):
+              system.step()
+            wb = system.cc0.writeback("A")
+          system.run_until_idle(500)
+          self.assertEqual("latest", system.cc1.read_response_for(request).payload)
+          self.assertIsNotNone(system.cc0.write_response_for(wb))
+          self.assertNotIn("A", system.cc0.cache)
+          self.assertEqual("latest", system.hf.dirty_data["A"])
+          for table in (system.hf.pending_requests, system.hf.write_dbids,
+                        system.hf.address_busy, system.hf.pending_snoops):
+            self.assertFalse(table)
+
+  def test_dirty_writeback_completes_at_home_before_memory_update(self):
+    system = Zhujiang(id_capacity=1)
+    system.s.dj.write("A", "old")
+    system.cc0.read_unique("A")
+    system.run_until_idle()
+    system.cc0.store_cached("A", "latest")
+    wb = system.cc0.writeback("A")
+    system.run_until_idle()
+    self.assertIsNotNone(system.cc0.write_response_for(wb))
+    self.assertNotIn("A", system.hf.directory)
+    self.assertEqual("old", system.s.dj.data_by_address["A"])
+    request = system.cc1.read_shared("A")
+    system.run_until_idle()
+    self.assertEqual("latest", system.cc1.read_response_for(request).payload)
+
   def test_dirty_snoop_preserves_latest_data_at_home(self):
     for unique in (False, True):
       with self.subTest(unique=unique):

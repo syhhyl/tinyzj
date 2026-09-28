@@ -17,6 +17,7 @@ class ReqOpcode:
   READ_NO_SNP = "ReadNoSnp"
   WRITE_NO_SNP_FULL = "WriteNoSnpFull"
   WRITE_UNIQUE_FULL = "WriteUniqueFull"
+  WRITE_BACK_FULL = "WriteBackFull"
   READ_SHARED = "ReadShared"
   READ_UNIQUE = "ReadUnique"
 
@@ -37,6 +38,7 @@ class DatOpcode:
   COMP_DATA = "CompData"
   NON_COPY_BACK_WRITE_DATA = "NonCopyBackWriteData"
   SNP_RESP_DATA = "SnpRespData"
+  COPY_BACK_WRITE_DATA = "CopyBackWriteData"
 
 
 class RespErr:
