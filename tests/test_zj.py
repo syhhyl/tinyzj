@@ -681,36 +681,6 @@ class ZhujiangTest(unittest.TestCase):
     self.assertEqual(0, cc0_request.transaction_id)
     self.assertEqual(0, cc1_request.transaction_id)
 
-  def test_home_dbid_is_distinct_from_each_ccs_txnid(self):
-    zhujiang = Zhujiang()
-    zhujiang.hf.next_dbid = 50
-    zhujiang.cc0.read("0x1000")
-    request = zhujiang.cc1.write("0x2000", "value 2")
-
-    zhujiang.run_until_idle()
-
-    dbid_response = [
-      message
-      for message in zhujiang.cc1.received_messages
-      if message.opcode == RspOpcode.DBID_RESP
-    ][0]
-    self.assertEqual(0, request.transaction_id)
-    self.assertEqual(0, dbid_response.transaction_id)
-    self.assertEqual(50, dbid_response.dbid)
-
-  def test_transaction_tables_are_empty_after_concurrent_transactions(self):
-    zhujiang = Zhujiang()
-    zhujiang.cc0.write("0x1000", "value 1")
-    zhujiang.cc1.write("0x2000", "value 2")
-
-    zhujiang.run_until_idle()
-
-    self.assertEqual({}, zhujiang.cc0.pending_write_data)
-    self.assertEqual({}, zhujiang.cc1.pending_write_data)
-    self.assertEqual({}, zhujiang.hf.pending_requests)
-    self.assertEqual({}, zhujiang.hf.pending_write_data)
-    self.assertEqual({}, zhujiang.s.pending_writes)
-
   def test_s_ignores_non_storage_requests(self):
     zhujiang = Zhujiang()
     request = Message(

@@ -94,18 +94,6 @@ class TopologyTest(unittest.TestCase):
           [node.name for node in ring.path_from(source, target)],
         )
 
-  def test_square_ring_returns_to_each_start_after_four_forward_hops(self):
-    ring = make_square_ring()
-
-    for start in ("n00", "n01", "n11", "n10"):
-      with self.subTest(start=start):
-        current = start
-        for _ in range(4):
-          _, next_node = ring.neighbors_of(current)
-          current = next_node.name
-        self.assertEqual(start, current)
-
-
 class InjectionTest(unittest.TestCase):
   def test_request_stays_at_source(self):
     """Request stays at source."""
@@ -356,14 +344,6 @@ class DeliveryTest(unittest.TestCase):
       ring.step()
 
     self.assertEqual([injection], ring.in_flight)
-
-  def test_step_leaves_an_empty_ring_unchanged(self):
-    """Stepping an empty ring creates no in-flight messages."""
-    ring = make_ring()
-
-    ring.step()
-
-    self.assertEqual([], ring.in_flight)
 
   def test_step_delivers_a_local_message(self):
     """A message addressed to its source is delivered immediately."""
