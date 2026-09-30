@@ -74,7 +74,7 @@ class DirtyDataTest(unittest.TestCase):
           system.run_until_idle(500)
           self.assertEqual("latest", system.cc1.read_response_for(request).payload)
           self.assertIsNotNone(system.cc0.write_response_for(wb))
-          self.assertNotIn("A", system.cc0.cache)
+          self.assertEqual((Resp.I, "latest"), system.cc0.cache["A"])
           self.assertEqual("latest", system.hf.dirty_data["A"])
           for table in (system.hf.pending_requests, system.hf.write_dbids,
                         system.hf.address_busy, system.hf.pending_snoops):

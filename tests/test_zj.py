@@ -552,7 +552,7 @@ class ZhujiangTest(unittest.TestCase):
     write_request = zhujiang.cc1.write("0x1000", "value 2")
     zhujiang.run_until_idle()
 
-    self.assertNotIn("0x1000", zhujiang.cc0.cache)
+    self.assertEqual((Resp.I, "value 1"), zhujiang.cc0.cache["0x1000"])
     self.assertEqual({}, zhujiang.hf.directory)
     self.assertEqual("value 2", zhujiang.s.dj.data_by_address["0x1000"])
     self.assertEqual(
@@ -607,7 +607,7 @@ class ZhujiangTest(unittest.TestCase):
     zhujiang.cc0.write("0x1000", "value 2")
     zhujiang.run_until_idle()
 
-    self.assertNotIn("0x1000", zhujiang.cc1.cache)
+    self.assertEqual((Resp.I, "value 1"), zhujiang.cc1.cache["0x1000"])
     self.assertEqual({}, zhujiang.hf.directory)
     self.assertEqual("value 2", zhujiang.s.dj.data_by_address["0x1000"])
 
@@ -647,7 +647,7 @@ class ZhujiangTest(unittest.TestCase):
     cached = set(
       cc.node_name
       for cc in (zhujiang.cc0, zhujiang.cc1)
-      if "0x1000" in cc.cache
+      if "0x1000" in cc.cache and cc.cache["0x1000"][0] != Resp.I
     )
     self.assertEqual(cached, set(zhujiang.hf.directory.get("0x1000", {})))
     self.assertEqual({}, zhujiang.hf.pending_requests)

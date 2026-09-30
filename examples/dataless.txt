@@ -1,17 +1,25 @@
-# 无数据 snoop 响应演示：用户只发起 read / write
-# 观察干净副本返回 SnpResp[RSP]，而不是 SnpRespData[DAT]
-# 这里无数据指 snoop 响应；整个读写事务仍包含 DAT，不是 Dataless 维护事务
+# Dataless 场景：发起不携带数据的维护请求（CleanInvalid / CleanShared）
+# 本示例中的副本始终干净，因此这些事务只经过 REQ/SNP/RSP，不产生 DAT
+# 如果被探测副本为 UD，维护请求仍是 Dataless，但 snoop 可用 SnpRespData 返回脏数据
 
-# 准备：读未写入的 A，取得教学默认值，CC0 持有干净的 SC 副本
+# 1. CC0 读 A，取得干净 SC 副本（数据来自 S）
 read A cc0
 step 12
-# 1. CC1 读：HF 向 CC0 发 SnpShared[SNP]
-# CC0 的副本干净，只返回 SnpResp[RSP]；读数据由 HF 从 S 取得
+
+# 2. CC1 发起 CleanInvalid：HF 向持有者 CC0 发 SNP/SnpCleanInvalid
+#    CC0 失效该副本并回 RSP/SnpResp（无数据），HF 用 RSP/Comp 完成 CC1
+clean-invalid A cc1
+step 8
+
+# 3. CC0 再读 A：副本已被失效，重新从 S 取数并缓存 SC
+read A cc0
+step 12
+
+# 4. 两核都读 A 成为共享持有者
 read A cc1
 step 16
 
-# 2. CC0 写：HF 向两个持有者发 SnpUnique[SNP]
-# 两个 SC 副本失效并返回 SnpResp[RSP]，不回传旧数据
-# CC0 通过 ReadUnique 取得独占权限，随后本地写 updated [UD]；S 不更新
-write A updated cc0
-step 17
+# 5. CC0 发起 CleanShared：HF 向两个持有者发 SNP/SnpCleanShared
+#    本示例中的副本保持可读（SC），仅回 RSP/SnpResp（无数据），S 保持权威
+clean-shared A cc0
+step 9

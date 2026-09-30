@@ -209,7 +209,8 @@ class Socket(Endpoint):
   def read_shared(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    if address in self.cache and not self._address_pending(address):
+    if (address in self.cache and self.cache[address][0] != Resp.I
+        and not self._address_pending(address)):
       return None
     return self._send_request(
       address=address,
@@ -220,7 +221,8 @@ class Socket(Endpoint):
   def read_unique(self, address):
     if address is None:
       raise ValueError("read request needs an address")
-    if address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD) and not self._address_pending(address):
+    if (address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD)
+        and not self._address_pending(address)):
       return None
     return self._send_request(
       address=address,
@@ -249,7 +251,7 @@ class Socket(Endpoint):
     )
 
   def writeback(self, address):
-    if address not in self.cache:
+    if address not in self.cache or self.cache[address][0] == Resp.I:
       raise ValueError("writeback requires a cached line")
     return self._write(address, self.cache[address][1], ReqOpcode.WRITE_BACK_FULL)
 
@@ -493,7 +495,7 @@ class Socket(Endpoint):
     ):
       dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
       payload = self.cache[message.address][1] if dirty else None
-      if message.address in self.cache:
+      if message.address in self.cache and self.cache[message.address][0] != Resp.I:
         state, payload = self.cache[message.address]
         self.cache[message.address] = (Resp.SC, payload)
       self.send(
@@ -512,15 +514,15 @@ class Socket(Endpoint):
       message.channel == Channel.SNP
       and message.opcode in (SnpOpcode.SNP_UNIQUE, SnpOpcode.SNP_CLEAN_INVALID)
     ):
-      dirty = self.cache.get(message.address, (None,))[0] == Resp.UD
-      payload = self.cache[message.address][1] if dirty else None
-      self.cache.pop(message.address, None)
+      state, payload = self.cache.get(message.address, (Resp.I, None))
+      dirty = state == Resp.UD
+      self.cache[message.address] = (Resp.I, payload)
       self.send(
         Message(
           self.node_name,
           message.source_name,
           transaction_id=message.transaction_id,
-          payload=payload,
+          payload=payload if dirty else None,
           channel=Channel.DAT if dirty else Channel.RSP,
           opcode=DatOpcode.SNP_RESP_DATA if dirty else RspOpcode.SNP_RESP,
           resp=Resp.I,
@@ -535,7 +537,8 @@ class Socket(Endpoint):
       request = self.active_requests[message.transaction_id]
       copyback = request.opcode == ReqOpcode.WRITE_BACK_FULL
       if copyback:
-        state, data = self.cache.pop(request.address, (Resp.I, None))
+        state, data = self.cache.get(request.address, (Resp.I, None))
+        self.cache[request.address] = (Resp.I, data)
       write_data = Message(
         self.node_name,
         message.source_name,

@@ -1,0 +1,21 @@
+# Read 场景：未命中取数、同核缓存命中、跨核共享读触发 snoop
+# read = ReadShared：命中直接返回本地副本（不发消息），未命中才进网络
+# 跨核读同一行时，Home 先 snoop 现有持有者再返回数据
+
+# 1. CC0 首次读 A：未命中，REQ/ReadShared → HF 从 S 取数 → DAT/CompData[SC]
+#    CC0 回 RSP/CompAck，目录登记 n00 持有 SC
+read A cc0
+step 12
+
+# 2. CC0 再读 A：已持有 SC，缓存命中，不产生任何消息
+read A cc0
+step 1
+
+# 3. CC1 读 A：未命中，且 CC0 已持有该行；HF 先发 SNP/SnpShared 给 CC0
+#    副本干净，CC0 回 RSP/SnpResp（不带数据），HF 再取数给 CC1，两核均为 SC
+read A cc1
+step 16
+
+# 4. CC1 再次读 A：缓存命中，不进网络
+read A cc1
+step 1

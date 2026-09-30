@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
 
+from tinyzj.chi import RspOpcode, SnpOpcode
 from tinyzj.dashboard import Dashboard, main
 
 
@@ -34,6 +35,30 @@ class DashboardTest(unittest.TestCase):
     self.assertFalse(dashboard.system.cc0.pending_cached_stores)
     dashboard.system.check_invariants()
 
+  def test_clean_invalid_is_a_dataless_snooping_transaction(self):
+    dashboard = Dashboard()
+    dashboard.read("A", "cc0")
+    dashboard.system.run_until_idle()
+    request = dashboard.clean_invalid("A", "cc1")
+    dashboard.system.run_until_idle()
+    self.assertIsNotNone(dashboard.system.cc1.write_response_for(request))
+    self.assertEqual(("I", "read data"), dashboard.system.cc0.cache["A"])
+    self.assertTrue(any(message.opcode == SnpOpcode.SNP_CLEAN_INVALID
+                        for message in dashboard.system.cc0.received_messages))
+    dashboard.system.check_invariants()
+
+  def test_retry_flag_produces_retry_ack_and_grant(self):
+    dashboard = Dashboard(retry_enabled=True)
+    dashboard.read("A", "cc0")
+    dashboard.read("B", "cc1")
+    dashboard.system.run_until_idle()
+    opcodes = [message.opcode for cc in (dashboard.system.cc0, dashboard.system.cc1)
+               for message in cc.received_messages]
+    self.assertIn(RspOpcode.RETRY_ACK, opcodes)
+    self.assertIn(RspOpcode.PCRD_GRANT, opcodes)
+    self.assertFalse(dashboard.system.has_pending_work())
+    dashboard.system.check_invariants()
+
   def test_footer_layout_and_command_response_completion(self):
     dashboard = Dashboard()
     request = dashboard.write("A", "hello")
@@ -52,6 +77,8 @@ class DashboardTest(unittest.TestCase):
     self.assertEqual("done", entry["state"])
     self.assertIn("✓ 已完成", dashboard.render())
     self.assertIn("'A' = 'hello'", dashboard.render())
+    self.assertIn("HF directory", dashboard.render())
+    self.assertIn("'A' = n00:UC", dashboard.render())
 
   def test_viewport_fits_single_screen_without_advancing(self):
     dashboard = Dashboard()
@@ -172,7 +199,7 @@ class DashboardTest(unittest.TestCase):
         break
       dashboard.step()
     self.assertEqual({"A": ("UD", "new")}, dashboard.system.cc0.cache)
-    self.assertEqual({}, dashboard.system.cc1.cache)
+    self.assertEqual({"A": ("I", "hello")}, dashboard.system.cc1.cache)
     self.assertNotIn("A", dashboard.system.s.dj.data_by_address)
     self.assertEqual({}, dashboard.system.hf.address_busy)
 

@@ -1,6 +1,6 @@
 import unittest
 
-from tinyzj.chi import RespErr, SnpOpcode
+from tinyzj.chi import Resp, RespErr, RspOpcode, SnpOpcode
 from tinyzj.zj import Zhujiang
 
 
@@ -33,12 +33,27 @@ class MaintenanceTest(unittest.TestCase):
       system.run_until_idle(500)
       self.assertEqual(RespErr.NDERR if error else RespErr.OK,
                        system.cc1.write_response_for(request).resp_err)
-      self.assertNotIn(0, system.cc0.cache)
+      self.assertEqual((Resp.I, bytes([9]) * 64), system.cc0.cache[0])
       self.assertNotIn(0, system.hf.directory)
       self.assertEqual(bytes(64) if error else bytes([9]) * 64, system.s.dj.data_by_address[0])
       self.assertEqual(error, 0 in system.hf.dirty_data)
       self.assertFalse(system.hf.address_busy)
       self.assertTrue(any(m.opcode == SnpOpcode.SNP_CLEAN_INVALID for m in system.cc0.received_messages))
+
+  def test_clean_invalid_clean_holder_returns_dataless_snoop_response(self):
+    system = Zhujiang()
+    system.s.dj.write("A", "old")
+    system.cc0.read_shared("A")
+    system.run_until_idle()
+    request = system.cc1.clean_invalid("A")
+    system.run_until_idle()
+
+    response = next(message for message in system.hf.received_messages
+                    if message.opcode == RspOpcode.SNP_RESP
+                    and message.source_name == "n00")
+    self.assertIsNone(response.payload)
+    self.assertEqual((Resp.I, "old"), system.cc0.cache["A"])
+    self.assertEqual(RespErr.OK, system.cc1.write_response_for(request).resp_err)
 
   def test_clean_invalid_without_cached_line_completes(self):
     system = Zhujiang(id_capacity=1)

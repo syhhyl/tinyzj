@@ -30,6 +30,8 @@ class StressTest(unittest.TestCase):
       self.assertTrue(all(state == "complete" for state in cc.request_states.values()))
       self.assertFalse(cc.waiting_write_data)
       for address, (state, value) in cc.cache.items():
+        if state == Resp.I:
+          continue
         self.assertNotIn(address, system.s.error_addresses)
         self.assertEqual(system.s.dj.read(address)[0], value)
         holders.setdefault(address, {})[cc.node_name] = state

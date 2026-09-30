@@ -1,6 +1,6 @@
 import unittest
 
-from tinyzj.chi import Channel, ReqOpcode
+from tinyzj.chi import Channel, ReqOpcode, Resp
 from tinyzj.zj import Zhujiang
 
 
@@ -27,5 +27,5 @@ class WriteModeTest(unittest.TestCase):
     request = system.cc1.write_unique("A", "new")
     system.run_until_idle()
     self.assertEqual(ReqOpcode.WRITE_UNIQUE_FULL, request.opcode)
-    self.assertNotIn("A", system.cc0.cache)
+    self.assertEqual((Resp.I, "old"), system.cc0.cache["A"])
     self.assertEqual("new", system.s.dj.data_by_address["A"])

@@ -1,0 +1,23 @@
+# Write 场景：写未命中先取独占权，本地更新为 UD；远端读回最新值
+# write = store：没有独占权时先 ReadUnique（需要时先失效其他副本），
+#                再把数据写成本地 UD，不会立即写入 S
+
+# 1. CC0 首次写 A：未缓存 → REQ/ReadUnique → DAT/CompData[UC]，随后本地写 hello [UD]
+#    此时 S 中还没有 A 的数据
+write A hello cc0
+step 12
+
+# 2. CC1 读 A：HF 向 UD 持有者 CC0 发 SNP/SnpShared
+#    CC0 用 DAT/SnpRespData 回传脏数据，HF 接管 dirty；CC1 得到 hello [SC]
+read A cc1
+step 10
+
+# 3. CC0 覆盖写：已被降级为 SC，需重新 ReadUnique
+#    HF 向两核发 SNP/SnpUnique；CC1 的 A 进入显式 [I] 状态并从有效目录持有者中移除，
+#    再授予 CC0 [UC]，本地写 updated [UD]
+write A updated cc0
+step 11
+
+# 4. CC1 再读 A：再次 SnpShared 带回 updated，验证最新值可见
+read A cc1
+step 10

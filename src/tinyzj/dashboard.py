@@ -15,11 +15,13 @@ from .zj import Zhujiang
 
 class Dashboard:
 
-  def __init__(self, buffer_capacity=2, max_transactions=1, error_addresses=None):
+  def __init__(self, buffer_capacity=2, max_transactions=1, error_addresses=None,
+               retry_enabled=False):
     self.system = Zhujiang(
       buffer_capacity=buffer_capacity,
       max_transactions=max_transactions,
       error_addresses=error_addresses,
+      retry_enabled=retry_enabled,
     )
     self.steps = 0
     self.requests = []
@@ -65,11 +67,26 @@ class Dashboard:
       self._identify_messages()
     return request
 
+  def _complete(self, endpoint, request):
+    if request is None:
+      return True
+    if endpoint.read_response_for(request) is not None:
+      return True
+    if endpoint.write_response_for(request) is not None:
+      return True
+    return endpoint.request_states.get(request) == "complete"
+
   def read(self, address, cc="cc0"):
     return self._request("read_shared", address, cc)
 
   def write(self, address, data, cc="cc0"):
     return self._request("store", address, cc, data)
+
+  def clean_invalid(self, address, cc="cc0"):
+    return self._request("clean_invalid", address, cc)
+
+  def clean_shared(self, address, cc="cc0"):
+    return self._request("clean_shared", address, cc)
 
   def memory(self, address=None):
     data = self.system.s.dj.data_by_address
@@ -114,6 +131,11 @@ class Dashboard:
       panel.append(paint(name, "1;37"))
       panel.extend(f"  {address!r} = {data!r} [{state}]"
                    for address, (state, data) in cache.items())
+    panel.append(paint("HF directory", "1;37"))
+    panel.extend(
+      f"  {address!r} = {', '.join(f'{node}:{state}' for node, state in holders.items())}"
+      for address, holders in self.system.hf.directory.items()
+    )
     panel.append(paint("HF dirty", "1;37"))
     panel.extend(f"  {address!r} = {data!r}"
                  for address, data in self.system.hf.dirty_data.items())
@@ -158,8 +180,7 @@ class Dashboard:
         request = entry.get("request")
         if entry["state"] == "active" and request is not None:
           endpoint = self._cc(entry["cc"])
-          response_for = endpoint.read_response_for
-          if response_for(request) is not None:
+          if self._complete(endpoint, request):
             entry["state"] = "done"
       self._identify_messages()
       events = []
@@ -352,21 +373,40 @@ class Dashboard:
 
 
 HELP = """命令：
-  read ADDRESS [cc0|cc1]
-  write ADDRESS DATA [cc0|cc1]
+  read ADDRESS [cc0|cc1]        共享读（ReadShared），未命中才进网络
+  write ADDRESS DATA [cc0|cc1]  读改本地缓存（ReadUnique 后写为 UD）
+  clean-invalid ADDRESS [cc0|cc1] 维护：使其他副本失效（CleanInvalid）
+  clean-shared ADDRESS [cc0|cc1]  维护：清共享但保留可读副本（CleanShared）
   memory [ADDRESS]     查看 S 的全部内存或指定地址，不推进时间
   step [N] / 回车       推进 N 步，默认 1；逐步显示
   show                 查看当前状态，不推进时间
   help                 显示帮助
   quit                 退出
 地址和数据作为字符串；含空格时用引号，例如 write A "hello world"。
-read 自动查缓存并发起共享读；write 取得独占权限后更新本地缓存为 UD，不立即写入 S。默认请求者为 cc0。"""
+read 自动查缓存并发起共享读；write 取得独占权限后更新本地缓存为 UD，不立即写入 S。默认请求者为 cc0。
+clean-invalid / clean-shared 发出的维护请求是 Dataless；若被探测副本为 UD，SnpRespData 仍会通过 DAT 返回脏数据。--retry 开启 RetryAck / PCrdGrant 流控。"""
+
+
+SCRIPT_REQUESTS = {
+  "read": (2, 3),
+  "write": (3, 4),
+  "clean-invalid": (2, 3),
+  "clean-shared": (2, 3),
+}
+SCRIPT_METHODS = {
+  "read": "read",
+  "write": "write",
+  "clean-invalid": "clean_invalid",
+  "clean-shared": "clean_shared",
+}
 
 
 def _main():
   parser = argparse.ArgumentParser(description="tinyzj 单步终端仪表盘")
   parser.add_argument("--buffer-capacity", type=int, default=2)
   parser.add_argument("--max-transactions", type=int, default=1)
+  parser.add_argument("--retry", action="store_true",
+                      help="开启 RetryAck / PCrdGrant 流控（retry_enabled=True）")
   parser.add_argument("--script", help="加载 read/write/step N 命令；step N 需按 N 次 Enter")
   parser.add_argument("--delay", type=float, default=0.4, help="终端连续播放间隔秒数，0 表示不等待")
   args = parser.parse_args()
@@ -390,7 +430,8 @@ def _main():
     except ValueError as error:
       parser.exit(1, f"{args.script}:{line_number}: {error}\n")
   try:
-    dashboard = Dashboard(args.buffer_capacity, args.max_transactions)
+    dashboard = Dashboard(args.buffer_capacity, args.max_transactions,
+                        retry_enabled=args.retry)
   except ValueError as error:
     parser.error(str(error))
   dashboard.commands = commands
@@ -427,20 +468,20 @@ def _main():
           break
         line_number = entry["line"]
         words = entry["words"]
-        if words[0] in ("read", "write"):
+        if words[0] in SCRIPT_REQUESTS:
           batch = [entry]
-          for following in script:
-            if following["words"][0] not in ("read", "write"):
-              pending_entry = following
-              break
-            batch.append(following)
+          if words[0] in ("read", "write"):
+            for following in script:
+              if following["words"][0] not in ("read", "write"):
+                pending_entry = following
+                break
+              batch.append(following)
           for request_entry in batch:
             line_number = request_entry["line"]
             request_words = request_entry["words"]
-            valid_lengths = (2, 3) if request_words[0] == "read" else (3, 4)
-            if len(request_words) not in valid_lengths:
-              raise ValueError("read/write 参数不正确")
-            if len(request_words) == valid_lengths[-1]:
+            if len(request_words) not in SCRIPT_REQUESTS[request_words[0]]:
+              raise ValueError(f"{request_words[0]} 参数不正确")
+            if len(request_words) == SCRIPT_REQUESTS[request_words[0]][-1]:
               dashboard._cc(request_words[-1])
           if not wait_for_enter(f"\nEnter 同时发起 {len(batch)} 条请求 / q> "):
             return
@@ -448,9 +489,9 @@ def _main():
           for request_entry in batch:
             line_number = request_entry["line"]
             request_words = request_entry["words"]
-            request = getattr(dashboard, request_words[0])(*request_words[1:])
+            request = getattr(dashboard, SCRIPT_METHODS[request_words[0]])(*request_words[1:])
             request_entry["request"] = request
-            default_length = 2 if request_words[0] == "read" else 3
+            default_length = 3 if request_words[0] == "write" else 2
             request_entry["cc"] = request_words[-1] if len(request_words) > default_length else "cc0"
             request_entry["state"] = "done" if request is None else "active"
           dashboard.show(refresh=True)
@@ -458,8 +499,8 @@ def _main():
         dashboard.current_command = entry
         dashboard.command_steps = 0
         entry["state"] = "active"
-        if words[0] not in ("read", "write", "step"):
-          raise ValueError("命令文件只支持 read、write、step N")
+        if words[0] != "step":
+          raise ValueError("命令文件只支持 read/write/clean-invalid/clean-shared/step N")
         if words[0] == "step" and len(words) != 2:
           raise ValueError("请使用 step N，N 为正整数")
       else:
@@ -496,6 +537,16 @@ def _main():
         dashboard.show(refresh=True)
       elif command == "write" and len(arguments) in (2, 3):
         dashboard.write(*arguments)
+        if script is not None:
+          entry["state"] = "done"
+        dashboard.show(refresh=True)
+      elif command == "clean-invalid" and len(arguments) in (1, 2):
+        dashboard.clean_invalid(*arguments)
+        if script is not None:
+          entry["state"] = "done"
+        dashboard.show(refresh=True)
+      elif command == "clean-shared" and len(arguments) in (1, 2):
+        dashboard.clean_shared(*arguments)
         if script is not None:
           entry["state"] = "done"
         dashboard.show(refresh=True)
