@@ -1,10 +1,18 @@
 # Retry 场景：Home 事务槽满时，用 RetryAck 让请求方稍后重发，再用 PCrdGrant 授权
-# 必须用 ./demo.sh retry.txt --retry 运行，以打开 retry_enabled
+# 用 ./demo.sh retry.txt 运行；dashboard 默认在资源不足时自动执行 retry 流程
 # 默认 --max-transactions 1：一笔地址事务占满 HF 后，另一个 CC 的请求会被重试
 
 # 两个 CC 对两个不同地址同时发起读，HF 只有一个事务槽
 # 后到的 REQ 收到 RSP/RetryAck，待槽位释放后 HF 发 RSP/PCrdGrant，
-# 请求方带 PCrdGrant 重发并完成
+# 请求方收到 RetryAck 和匹配的 PCrdGrant 后，使用信用自动重发（AllowRetry=0）并完成
 read A cc0
 read B cc1
-step 30
+
+# 前 3 步：CC1 的请求到达已满的 HF，观察 RetryAck
+step 3
+
+# 再推进 9 步到第 12 步：A 的 CompAck 释放事务槽，观察 HF 发出 PCrdGrant
+step 9
+
+# 完成 CC1 的重发请求和剩余事务
+step 14

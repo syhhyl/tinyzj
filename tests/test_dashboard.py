@@ -3,6 +3,7 @@ import re
 import unicodedata
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from tinyzj.chi import RspOpcode, SnpOpcode
@@ -47,17 +48,48 @@ class DashboardTest(unittest.TestCase):
                         for message in dashboard.system.cc0.received_messages))
     dashboard.system.check_invariants()
 
-  def test_retry_flag_produces_retry_ack_and_grant(self):
-    dashboard = Dashboard(retry_enabled=True)
-    dashboard.read("A", "cc0")
-    dashboard.read("B", "cc1")
-    dashboard.system.run_until_idle()
-    opcodes = [message.opcode for cc in (dashboard.system.cc0, dashboard.system.cc1)
-               for message in cc.received_messages]
-    self.assertIn(RspOpcode.RETRY_ACK, opcodes)
-    self.assertIn(RspOpcode.PCRD_GRANT, opcodes)
-    self.assertFalse(dashboard.system.has_pending_work())
-    dashboard.system.check_invariants()
+  def test_default_retry_responds_to_transaction_slot_pressure(self):
+    for slots in (1, 2):
+      with self.subTest(slots=slots):
+        dashboard = Dashboard(max_transactions=slots)
+        first = dashboard.read("A", "cc0")
+        second = dashboard.read("B", "cc1")
+        views = []
+        for _ in range(100):
+          if not dashboard.system.has_pending_work():
+            break
+          views.append(dashboard.step())
+        opcodes = [message.opcode for cc in (dashboard.system.cc0, dashboard.system.cc1)
+                   for message in cc.received_messages]
+        for opcode in (RspOpcode.RETRY_ACK, RspOpcode.PCRD_GRANT):
+          self.assertEqual(slots == 1, opcode in opcodes)
+          self.assertEqual(slots == 1, any(f"{opcode}[RSP]" in view for view in views))
+        attempts = [message for message in dashboard.system.hf.received_messages
+                    if message.source_name == "n11" and message.opcode == second.opcode]
+        self.assertEqual([True, False] if slots == 1 else [True],
+                         [message.allow_retry for message in attempts])
+        self.assertIsNotNone(dashboard.system.cc0.read_response_for(first))
+        self.assertIsNotNone(dashboard.system.cc1.read_response_for(second))
+        self.assertFalse(dashboard.system.has_pending_work())
+        dashboard.system.check_invariants()
+
+  def test_retry_script_runs_without_enable_flag_or_filename_special_case(self):
+    source = (Path(__file__).resolve().parents[1] / "examples" / "retry.txt").read_text()
+    for flags, expect_retry in (([], True), (["--no-retry"], False)):
+      with self.subTest(flags=flags):
+        prompts = []
+        def enter(prompt):
+          prompts.append(prompt)
+          self.assertLess(len(prompts), 100)
+          return "q" if "脚本执行完成" in prompt else ""
+        output = StringIO()
+        with patch("sys.argv", ["dashboard", "--script", "commands.txt", *flags]), \
+          patch("builtins.open", return_value=StringIO(source)), \
+          patch("builtins.input", side_effect=enter), redirect_stdout(output):
+          main()
+        for opcode in (RspOpcode.RETRY_ACK, RspOpcode.PCRD_GRANT):
+          self.assertEqual(expect_retry, f"{opcode}[RSP]" in output.getvalue())
+        self.assertIn("脚本执行完成", prompts[-1])
 
   def test_footer_layout_and_command_response_completion(self):
     dashboard = Dashboard()
@@ -113,12 +145,16 @@ class DashboardTest(unittest.TestCase):
   def test_script_batches_requests_and_waits_at_end_of_file(self):
     dashboard = Dashboard()
     source = "write A hello cc0\n# same time\n\nread A cc1\n"
+    prompts = []
     def enter(prompt):
+      prompts.append(prompt)
       if "同时发起" in prompt:
         self.assertEqual([], dashboard.system.ring.in_flight)
         self.assertEqual(0, dashboard.steps)
       elif dashboard.steps == 0:
         self.assertEqual(2, len(dashboard.system.ring.in_flight))
+      elif "q 退出" in prompt:
+        return "q"
       return ""
     with patch("sys.argv", ["dashboard", "--script", "commands.txt"]), \
       patch("builtins.open", return_value=StringIO(source)), \
@@ -129,6 +165,7 @@ class DashboardTest(unittest.TestCase):
     self.assertEqual("hello", dashboard.system.cc1.cache["A"][1])
     self.assertEqual([], dashboard.system.ring.in_flight)
     self.assertTrue(all(entry["state"] == "done" for entry in dashboard.commands))
+    self.assertTrue(any("脚本执行完成，输入 q 退出" in prompt for prompt in prompts))
 
   def test_script_step_separates_request_batches(self):
     dashboard = Dashboard()
@@ -250,7 +287,7 @@ class DashboardTest(unittest.TestCase):
     self.assertTrue(all("\033[36m" in line for line in rows))
 
   def test_blocked_request_is_displayed_outside_node(self):
-    dashboard = Dashboard(max_transactions=1)
+    dashboard = Dashboard(max_transactions=1, retry_enabled=False)
     dashboard.write("A", "value", cc="cc0")
     dashboard.read("B", cc="cc1")
     dashboard.step(2)

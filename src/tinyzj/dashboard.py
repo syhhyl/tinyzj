@@ -16,7 +16,7 @@ from .zj import Zhujiang
 class Dashboard:
 
   def __init__(self, buffer_capacity=2, max_transactions=1, error_addresses=None,
-               retry_enabled=False):
+               retry_enabled=True):
     self.system = Zhujiang(
       buffer_capacity=buffer_capacity,
       max_transactions=max_transactions,
@@ -384,7 +384,8 @@ HELP = """命令：
   quit                 退出
 地址和数据作为字符串；含空格时用引号，例如 write A "hello world"。
 read 自动查缓存并发起共享读；write 取得独占权限后更新本地缓存为 UD，不立即写入 S。默认请求者为 cc0。
-clean-invalid / clean-shared 发出的维护请求是 Dataless；若被探测副本为 UD，SnpRespData 仍会通过 DAT 返回脏数据。--retry 开启 RetryAck / PCrdGrant 流控。"""
+clean-invalid / clean-shared 发出的维护请求是 Dataless；若被探测副本为 UD，SnpRespData 仍会通过 DAT 返回脏数据。
+资源不足时默认自动执行 RetryAck / PCrdGrant 和请求重发；--no-retry 改用接收反压。"""
 
 
 SCRIPT_REQUESTS = {
@@ -405,9 +406,9 @@ def _main():
   parser = argparse.ArgumentParser(description="tinyzj 单步终端仪表盘")
   parser.add_argument("--buffer-capacity", type=int, default=2)
   parser.add_argument("--max-transactions", type=int, default=1)
-  parser.add_argument("--retry", action="store_true",
-                      help="开启 RetryAck / PCrdGrant 流控（retry_enabled=True）")
-  parser.add_argument("--script", help="加载 read/write/step N 命令；step N 需按 N 次 Enter")
+  parser.add_argument("--retry", action=argparse.BooleanOptionalAction, default=True,
+                      help="默认自动执行 RetryAck / PCrdGrant 流控；--no-retry 改用接收反压")
+  parser.add_argument("--script", help="加载 read/write/step N 命令；执行完成后输入 q 退出")
   parser.add_argument("--delay", type=float, default=0.4, help="终端连续播放间隔秒数，0 表示不等待")
   args = parser.parse_args()
   if args.delay < 0:
@@ -455,6 +456,7 @@ def _main():
     return True
 
   pending_entry = None
+  script_finished = False
   while True:
     try:
       if script is not None:
@@ -462,10 +464,14 @@ def _main():
         pending_entry = None
         if entry is None:
           dashboard.current_command = None
-          while dashboard.system.ring.in_flight:
+          while dashboard.system.has_pending_work():
             if not next_step():
               return
-          break
+          script = None
+          script_finished = True
+          print("\n脚本执行完成。输入 q 退出，或继续交互。")
+          dashboard.show(refresh=True)
+          continue
         line_number = entry["line"]
         words = entry["words"]
         if words[0] in SCRIPT_REQUESTS:
@@ -504,10 +510,13 @@ def _main():
         if words[0] == "step" and len(words) != 2:
           raise ValueError("请使用 step N，N 为正整数")
       else:
-        words = shlex.split(input("\ntinyzj> "))
+        prompt = "\n脚本执行完成，输入 q 退出 > " if script_finished else "\ntinyzj> "
+        words = shlex.split(input(prompt))
+        if words:
+          script_finished = False
       command = words[0] if words else "step"
       arguments = words[1:]
-      if command in ("quit", "exit") and not arguments:
+      if command in ("q", "quit", "exit") and not arguments:
         break
       if command == "help" and not arguments:
         print(HELP)
