@@ -1,6 +1,6 @@
 # Snoop 场景：Home 为同一行的一致访问发起的探测
 # SnpShared     读共享：持有者降级；干净副本回 RSP/SnpResp，脏副本回 DAT/SnpRespData
-# SnpUnique     独占/写：持有者失效，回 RSP/SnpResp
+# SnpMakeInvalid 完整行覆盖写：持有者失效，旧脏数据也不回传
 # 探测走 SNP 通道，响应走 RSP（无数据）或 DAT（带数据）
 
 # 1. CC0 先读 A，成为 SC 持有者
@@ -11,7 +11,7 @@ step 12
 read A cc1
 step 16
 
-# 3. CC0 写 A：ReadUnique 使 HF 向两个 SC 持有者发 SNP/SnpUnique，
+# 3. CC0 完整行写 A：MakeUnique 使 HF 向两个 SC 持有者发 SNP/SnpMakeInvalid，
 #    两者失效回 RSP/SnpResp，CC0 再本地写 updated [UD]
 write A updated cc0
 step 17

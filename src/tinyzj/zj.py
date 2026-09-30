@@ -17,9 +17,17 @@ from .atomic import OPERATIONS, LOAD_OPCODES, STORE_OPCODES, calculate
 
 ATOMIC_OPCODES = (ReqOpcode.ATOMIC_SWAP, ReqOpcode.ATOMIC_COMPARE) + LOAD_OPCODES + STORE_OPCODES
 MAINTENANCE_OPCODES = (ReqOpcode.CLEAN_INVALID, ReqOpcode.CLEAN_SHARED)
+DATALESS_OPCODES = (ReqOpcode.MAKE_UNIQUE, ReqOpcode.CLEAN_UNIQUE, ReqOpcode.EVICT)
+ACKED_DATALESS_OPCODES = (ReqOpcode.MAKE_UNIQUE, ReqOpcode.CLEAN_UNIQUE)
+COHERENT_READ_OPCODES = (
+  ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE,
+)
+COPY_BACK_OPCODES = (ReqOpcode.WRITE_BACK_FULL, ReqOpcode.WRITE_CLEAN_FULL)
+UNIQUE_WRITE_OPCODES = (ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_UNIQUE_PTL)
 WRITE_DATA_OPCODES = (
   ReqOpcode.WRITE_NO_SNP_FULL, ReqOpcode.WRITE_NO_SNP_PTL,
-  ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_BACK_FULL,
+  ReqOpcode.WRITE_UNIQUE_FULL, ReqOpcode.WRITE_UNIQUE_PTL,
+  ReqOpcode.WRITE_BACK_FULL, ReqOpcode.WRITE_CLEAN_FULL,
   ReqOpcode.DVM_OP,
 ) + ATOMIC_OPCODES
 
@@ -149,7 +157,7 @@ class Zhujiang:
           cache = ring.connections[node].cache
           assert address in cache, (node, address)
           assert cache[address][0] == state or (state == Resp.UC and cache[address][0] == Resp.UD)
-        if any(state == Resp.UC for state in holders.values()):
+        if any(state in (Resp.UC, Resp.UD) for state in holders.values()):
           assert len(holders) == 1
       assert not home.pending_snoops and not home.address_busy
       assert not home.downstream_requests and not home.write_dbids
@@ -238,12 +246,11 @@ class Socket(Endpoint):
     self.cache[address] = (Resp.UD, data)
 
   def store(self, address, data):
-    request = self.read_unique(address)
-    if request is None:
+    if (address in self.cache and self.cache[address][0] in (Resp.UC, Resp.UD)
+        and not self._address_pending(address)):
       self.store_cached(address, data)
-    else:
-      self.pending_cached_stores[request] = data
-    return request
+      return None
+    return self.make_unique(address, data)
 
   def _address_pending(self, address):
     return any(request.address == address for request in self.active_requests.values()) or any(
@@ -251,9 +258,47 @@ class Socket(Endpoint):
     )
 
   def writeback(self, address):
-    if address not in self.cache or self.cache[address][0] == Resp.I:
-      raise ValueError("writeback requires a cached line")
+    if address not in self.cache or self.cache[address][0] != Resp.UD:
+      raise ValueError("writeback requires a dirty cached line")
+    if self._address_pending(address):
+      raise ValueError("writeback requires an idle cached line")
     return self._write(address, self.cache[address][1], ReqOpcode.WRITE_BACK_FULL)
+
+  def write_clean(self, address):
+    if address not in self.cache or self.cache[address][0] != Resp.UD:
+      raise ValueError("write clean requires a dirty cached line")
+    if self._address_pending(address):
+      raise ValueError("write clean requires an idle cached line")
+    return self._write(address, self.cache[address][1], ReqOpcode.WRITE_CLEAN_FULL)
+
+  def evict(self, address):
+    if address not in self.cache or self.cache[address][0] not in (Resp.UC, Resp.SC):
+      raise ValueError("evict requires a clean cached line")
+    if self._address_pending(address):
+      raise ValueError("evict requires an idle cached line")
+    state, payload = self.cache[address]
+    self.cache[address] = (Resp.I, payload)
+    request = self._send_request(address, Channel.REQ, ReqOpcode.EVICT)
+    request.resp = state
+    return request
+
+  def clean_unique(self, address):
+    if address not in self.cache or self.cache[address][0] == Resp.I:
+      raise ValueError("clean unique requires a cached line")
+    if self.cache[address][0] in (Resp.UC, Resp.UD) and not self._address_pending(address):
+      return None
+    if self._address_pending(address):
+      raise ValueError("clean unique requires an idle cached line")
+    request = self._send_request(address, Channel.REQ, ReqOpcode.CLEAN_UNIQUE)
+    request.resp = self.cache[address][0]
+    return request
+
+  def make_unique(self, address, data):
+    if address is None:
+      raise ValueError("maintenance requires an address")
+    request = self._send_request(address, Channel.REQ, ReqOpcode.MAKE_UNIQUE)
+    self.pending_cached_stores[request] = data
+    return request
 
   def write(self, address, data):
     return self.write_unique(address, data)
@@ -333,6 +378,17 @@ class Socket(Endpoint):
   def write_unique(self, address, data):
     return self._write(address, data, ReqOpcode.WRITE_UNIQUE_FULL)
 
+  def write_unique_partial(self, address, data, byte_enable):
+    if type(address) is not int or address < 0 or address % 64:
+      raise ValueError("partial line write requires a 64-byte aligned integer address")
+    if not isinstance(data, bytes) or len(data) != 64:
+      raise ValueError("partial line write requires 64 bytes")
+    if type(byte_enable) is not int or not 0 <= byte_enable < (1 << 64):
+      raise ValueError("byte_enable must be a 64-bit mask")
+    request = self._write(address, data, ReqOpcode.WRITE_UNIQUE_PTL)
+    request.byte_enable = byte_enable
+    return request
+
   def _write(self, address, data, opcode):
     if address is None:
       raise ValueError("write request needs an address")
@@ -359,7 +415,7 @@ class Socket(Endpoint):
       address=address,
       channel=channel,
       opcode=opcode,
-      exp_comp_ack=opcode in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE),
+      exp_comp_ack=opcode in COHERENT_READ_OPCODES + ACKED_DATALESS_OPCODES,
     )
     self.waiting_requests.append(request)
     self.request_states[request] = "queued"
@@ -529,16 +585,27 @@ class Socket(Endpoint):
           pass_dirty=dirty,
         )
       )
+    elif message.channel == Channel.SNP and message.opcode == SnpOpcode.SNP_MAKE_INVALID:
+      state, payload = self.cache.get(message.address, (Resp.I, None))
+      self.cache[message.address] = (Resp.I, payload)
+      self.send(Message(
+        self.node_name, message.source_name,
+        transaction_id=message.transaction_id,
+        channel=Channel.RSP, opcode=RspOpcode.SNP_RESP, resp=Resp.I,
+      ))
     elif (
       message.channel == Channel.RSP
       and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
     ):
       data = self.pending_write_data[message.transaction_id]
       request = self.active_requests[message.transaction_id]
-      copyback = request.opcode == ReqOpcode.WRITE_BACK_FULL
+      copyback = request.opcode in COPY_BACK_OPCODES
       if copyback:
         state, data = self.cache.get(request.address, (Resp.I, None))
-        self.cache[request.address] = (Resp.I, data)
+        if request.opcode == ReqOpcode.WRITE_BACK_FULL:
+          self.cache[request.address] = (Resp.I, data)
+        else:
+          self.cache[request.address] = (Resp.UC, data)
       write_data = Message(
         self.node_name,
         message.source_name,
@@ -562,10 +629,27 @@ class Socket(Endpoint):
       and message.opcode == RspOpcode.COMP
     ):
       request = self.active_requests[message.transaction_id]
-      if request.opcode in MAINTENANCE_OPCODES:
+      if request.opcode in MAINTENANCE_OPCODES + DATALESS_OPCODES:
         self.active_requests.pop(message.transaction_id)
         self._responses[(Channel.RSP, RspOpcode.COMP, request)] = message
         self.request_states[request] = "complete"
+        if message.resp_err == RespErr.OK:
+          state, payload = self.cache.get(request.address, (Resp.I, None))
+          if request.opcode == ReqOpcode.MAKE_UNIQUE:
+            data = self.pending_cached_stores.pop(request)
+            self.cache[request.address] = (Resp.UD, data)
+          elif request.opcode == ReqOpcode.CLEAN_UNIQUE:
+            self.cache[request.address] = (Resp.UC, payload)
+          elif request.opcode == ReqOpcode.EVICT:
+            self.cache[request.address] = (Resp.I, payload)
+        else:
+          self.pending_cached_stores.pop(request, None)
+        if request.exp_comp_ack:
+          self.send(Message(
+            self.node_name, message.home_nid,
+            transaction_id=message.dbid,
+            channel=Channel.RSP, opcode=RspOpcode.COMP_ACK,
+          ))
         return
       self.write_completions[message.transaction_id] = message
       self._finish_write(message.transaction_id)
@@ -648,7 +732,7 @@ class HomeWrapper(Endpoint):
       self.address_busy.pop(request.address)
       self._send_atomic_result(request, old, completion.resp_err)
       return
-    if completion.resp_err == RespErr.OK and request.opcode in (ReqOpcode.WRITE_UNIQUE_FULL,) + MAINTENANCE_OPCODES:
+    if completion.resp_err == RespErr.OK and request.opcode in UNIQUE_WRITE_OPCODES + MAINTENANCE_OPCODES:
       self.dirty_data.pop(request.address, None)
       self.dirty_errors.pop(request.address, None)
     busy = self.address_busy.get(request.address)
@@ -690,7 +774,35 @@ class HomeWrapper(Endpoint):
       transaction_id=request.transaction_id,
       dbid=dbid,
       channel=Channel.RSP,
-      opcode=RspOpcode.COMP_DBID_RESP if request.opcode == ReqOpcode.WRITE_BACK_FULL else RspOpcode.DBID_RESP,
+      opcode=RspOpcode.COMP_DBID_RESP if request.opcode in COPY_BACK_OPCODES else RspOpcode.DBID_RESP,
+    ))
+
+  def _complete_dataless(self, home_id):
+    request = self.pending_requests[home_id]
+    address = request.address
+    if request.opcode in (ReqOpcode.MAKE_UNIQUE, ReqOpcode.CLEAN_UNIQUE):
+      self.dirty_data.pop(address, None)
+      self.dirty_errors.pop(address, None)
+      self.pending_comp_acks[(request.source_name, home_id)] = (
+        address, RespErr.OK, Resp.UC, home_id,
+      )
+      self.send(Message(
+        self.node_name, request.source_name,
+        transaction_id=request.transaction_id,
+        dbid=home_id, home_nid=self.node_name,
+        channel=Channel.RSP, opcode=RspOpcode.COMP,
+      ))
+      return
+    self.pending_requests.pop(home_id)
+    busy = self.address_busy.get(address)
+    if busy is not None:
+      busy.discard(home_id)
+      if not busy:
+        self.address_busy.pop(address, None)
+    self.send(Message(
+      self.node_name, request.source_name,
+      transaction_id=request.transaction_id,
+      channel=Channel.RSP, opcode=RspOpcode.COMP,
     ))
 
   def _complete_maintenance(self, home_id):
@@ -772,7 +884,7 @@ class HomeWrapper(Endpoint):
     if (
       message.channel == Channel.REQ
       and message.opcode
-      in (ReqOpcode.READ_NO_SNP, ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE)
+      in (ReqOpcode.READ_NO_SNP,) + COHERENT_READ_OPCODES
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
@@ -813,21 +925,35 @@ class HomeWrapper(Endpoint):
         self._send_storage_request(home_id, ReqOpcode.READ_NO_SNP)
     elif (
       message.channel == Channel.REQ
-      and message.opcode in WRITE_DATA_OPCODES + MAINTENANCE_OPCODES
+      and message.opcode in WRITE_DATA_OPCODES + MAINTENANCE_OPCODES + DATALESS_OPCODES
     ):
       if message.address is None:
         raise ValueError("home request needs an address")
       home_id = allocate_id(self, "next_home_id", self.pending_requests)
       self.pending_requests[home_id] = message
       self.address_busy.setdefault(message.address, set()).add(home_id)
-      holders = set(self.directory.get(message.address, {})) if message.opcode in (ReqOpcode.WRITE_UNIQUE_FULL,) + MAINTENANCE_OPCODES + ATOMIC_OPCODES else set()
+      if message.opcode == ReqOpcode.EVICT:
+        holders = self.directory.get(message.address, {})
+        holders.pop(message.source_name, None)
+        if not holders:
+          self.directory.pop(message.address, None)
+        self._complete_dataless(home_id)
+        return
+      snooping = UNIQUE_WRITE_OPCODES + MAINTENANCE_OPCODES + ATOMIC_OPCODES + (
+        ReqOpcode.MAKE_UNIQUE, ReqOpcode.CLEAN_UNIQUE,
+      )
+      holders = set(self.directory.get(message.address, {})) if message.opcode in snooping else set()
       if holders:
         snoop_id = allocate_id(self, "next_snoop_id", self.pending_snoops)
         self.pending_snoops[snoop_id] = {
           "home_id": home_id,
           "address": message.address,
           "awaiting": holders,
-          "kind": "maintenance" if message.opcode in MAINTENANCE_OPCODES else "write",
+          "kind": (
+            "maintenance" if message.opcode in MAINTENANCE_OPCODES
+            else "dataless" if message.opcode in DATALESS_OPCODES
+            else "write"
+          ),
         }
         for holder_name in holders:
           if message.opcode == ReqOpcode.CLEAN_SHARED:
@@ -842,7 +968,12 @@ class HomeWrapper(Endpoint):
               transaction_id=snoop_id,
               channel=Channel.SNP,
               opcode={ReqOpcode.CLEAN_INVALID: SnpOpcode.SNP_CLEAN_INVALID,
-                      ReqOpcode.CLEAN_SHARED: SnpOpcode.SNP_CLEAN_SHARED}.get(message.opcode, SnpOpcode.SNP_UNIQUE),
+                      ReqOpcode.CLEAN_SHARED: SnpOpcode.SNP_CLEAN_SHARED,
+                      ReqOpcode.MAKE_UNIQUE: SnpOpcode.SNP_MAKE_INVALID,
+                      ReqOpcode.CLEAN_UNIQUE: SnpOpcode.SNP_CLEAN_INVALID,
+                      ReqOpcode.WRITE_UNIQUE_FULL: SnpOpcode.SNP_MAKE_INVALID,
+                      ReqOpcode.WRITE_UNIQUE_PTL: SnpOpcode.SNP_CLEAN_INVALID}.get(
+                        message.opcode, SnpOpcode.SNP_UNIQUE),
             )
           )
         if message.address in self.directory and not self.directory[message.address]:
@@ -850,6 +981,8 @@ class HomeWrapper(Endpoint):
       else:
         if message.opcode in MAINTENANCE_OPCODES:
           self._complete_maintenance(home_id)
+        elif message.opcode in DATALESS_OPCODES:
+          self._complete_dataless(home_id)
         else:
           self._send_write_dbid(home_id)
     elif (
@@ -873,6 +1006,8 @@ class HomeWrapper(Endpoint):
           self._send_write_dbid(entry["home_id"])
         elif entry["kind"] == "maintenance":
           self._complete_maintenance(entry["home_id"])
+        elif entry["kind"] == "dataless":
+          self._complete_dataless(entry["home_id"])
         elif entry["kind"] == "dvm":
           home_id = entry["home_id"]
           self.pending_write_data.pop(home_id)
@@ -904,8 +1039,15 @@ class HomeWrapper(Endpoint):
       if message.resp == Resp.UD:
         self.dirty_data[request.address] = message.payload
         self.dirty_errors[request.address] = message.resp_err
-      holders = self.directory.get(request.address, {})
-      holders.pop(request.source_name, None)
+      holders = (
+        self.directory.setdefault(request.address, {})
+        if request.opcode == ReqOpcode.WRITE_CLEAN_FULL
+        else self.directory.get(request.address, {})
+      )
+      if request.opcode == ReqOpcode.WRITE_CLEAN_FULL:
+        holders[request.source_name] = Resp.UC
+      else:
+        holders.pop(request.source_name, None)
       if not holders:
         self.directory.pop(request.address, None)
       self.address_busy[request.address].discard(home_id)
@@ -956,7 +1098,25 @@ class HomeWrapper(Endpoint):
       request_mask = request.byte_enable
       if message.byte_enable != request_mask:
         raise ValueError("write data byte enable differs from request metadata")
-      self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_PTL if request.opcode == ReqOpcode.WRITE_NO_SNP_PTL else ReqOpcode.WRITE_NO_SNP_FULL)
+      if request.opcode == ReqOpcode.WRITE_UNIQUE_PTL and request.address in self.dirty_data:
+        old = self.dirty_data[request.address]
+        if not isinstance(old, bytes) or len(old) != 64:
+          raise ValueError("partial unique write requires a 64-byte dirty base line")
+        self.pending_write_data[home_id] = bytes(
+          new if request_mask & (1 << index) else previous
+          for index, (previous, new) in enumerate(zip(old, message.payload))
+        )
+        dirty_error = self.dirty_errors.get(request.address, RespErr.OK)
+        if dirty_error != RespErr.OK:
+          self.pending_write_errors[home_id] = dirty_error
+        request.byte_enable = None
+        self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
+        return
+      partial = request.opcode in (ReqOpcode.WRITE_NO_SNP_PTL, ReqOpcode.WRITE_UNIQUE_PTL)
+      self._send_storage_request(
+        home_id,
+        ReqOpcode.WRITE_NO_SNP_PTL if partial else ReqOpcode.WRITE_NO_SNP_FULL,
+      )
     elif (
       message.channel == Channel.RSP
       and message.opcode in (RspOpcode.DBID_RESP, RspOpcode.COMP_DBID_RESP)
@@ -1022,7 +1182,7 @@ class HomeWrapper(Endpoint):
         self.pending_write_data[home_id] = payload[:offset] + operand + payload[offset + size:]
         self._send_storage_request(home_id, ReqOpcode.WRITE_NO_SNP_FULL)
         return
-      if request.opcode not in (ReqOpcode.READ_SHARED, ReqOpcode.READ_UNIQUE):
+      if request.opcode not in COHERENT_READ_OPCODES:
         self.pending_requests.pop(home_id)
         busy = self.address_busy.get(request.address)
         if busy is not None:

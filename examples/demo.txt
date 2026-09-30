@@ -1,28 +1,58 @@
-# CHI 入门：只用地址 A，先看串行事务，再看共享和失效
-# read 未命中时 ReadShared；write 无独占权限时 ReadUnique，随后本地写为 UD
-# 连续 read/write 会同批发起，空行和注释不分批；用 step N 等前一阶段完成
-# 每次 Enter 推进一步；以下步数对应默认配置和字符串数据
+# 综合场景：Retry、缓存命中、干净/脏 Snoop、独占升级、维护与回写
+# 运行：./run.sh demo.txt
+# 默认 HF 只有 1 个事务槽；下列 step 数使每个阶段停在清晰、稳定的状态。
 
-# 1. 取得独占权限后本地写：CC0 保存 hello [UD]，S 尚未更新
-write A hello cc0
+# 1. 两核并发读不同地址：A 先占用 HF，B 收到 RetryAck；槽位释放后
+#    HF 发 PCrdGrant，CC1 携信用重发 B。预期：CC0/CC1 分别持有 A/B 的 SC。
+read A cc0
+read B cc1
+step 3
+step 9
+step 14
+
+# 2. CC0 再读 A：本地 SC 命中，不产生 REQ/SNP/RSP/DAT，缓存与目录不变。
+read A cc0
+step 1
+
+# 3. CC1 读 A：HF 对 CC0 发 SnpShared；干净副本只回 SnpResp（无 DAT）。
+#    预期：两核共享 A，均为 SC。
+read A cc1
+step 16
+
+# 4. CC0 完整行写 A：MakeUnique 用 SnpMakeInvalid 失效两份 SC；不读取旧值，
+#    本地写入 alpha 后成为 UD。预期：CC1 的 A 为 I，S 尚未得到 alpha。
+write A alpha cc0
+step 17
+
+# 5. CC0 再写 A：已有独占权，直接本地更新为 alpha2，不产生网络事务。
+write A alpha2 cc0
+step 1
+
+# 6. CC1 读 A：SnpShared 命中 CC0 的 UD，CC0 用 SnpRespData 返回最新脏数据。
+#    预期：两核均为 SC；HF 暂存 dirty=alpha2，S 仍未更新。
+read A cc1
+step 10
+
+# 7. CleanShared A：维护请求本身不带数据；HF 探测共享者并把 dirty 写回 S。
+#    预期：两份 SC 保持可读，S[A]=alpha2，HF 清除 dirty。
+clean-shared A cc1
+step 21
+
+# 8. CC1 完整行写 A：MakeUnique + SnpMakeInvalid 失效 CC0，本地写 beta 成为 UD。
+#    预期：CC0=A:I，CC1=A:UD；S[A] 仍是旧值 alpha2。
+write A beta cc1
+step 17
+
+# 9. CC0 CleanInvalid A：探测 CC1 的 UD，脏数据经 DAT 回到 HF 并写入 S，
+#    随后清空目录。预期：两核 A 均为 I，S[A]=beta。
+clean-invalid A cc0
+step 20
+
+# 10. CC0 再读 A：目录无持有者，HF 从 S 取回 beta。预期：CC0=A:SC。
+read A cc0
 step 12
 
-# 2. 写后同核读：命中最新的 hello，不产生 CHI 消息
-read A cc0
-step 1
-
-# 3. 同核再次读：本地缓存命中，不产生 CHI 消息
-read A cc0
-step 1
-
-# 4. 跨核读：CC0 用 SnpRespData 返回最新数据，HF 接管 dirty，两个核成为 SC
-read A cc1
-step 10
-
-# 5. 重新取得独占权限：失效共享副本，CC0 本地写为 updated [UD]
-write A updated cc0
-step 11
-
-# 6. 失效后重读：不能命中旧副本，重新取回 updated
-read A cc1
-step 10
+# 11. CC1 CleanInvalid A：失效 CC0 的干净 SC，只走 REQ/SNP/RSP，无 DAT。
+#     预期：A 无缓存持有者，S[A] 保持 beta；所有事务与地址锁均释放。
+clean-invalid A cc1
+step 8

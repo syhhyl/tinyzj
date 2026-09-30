@@ -559,13 +559,13 @@ class ZhujiangTest(unittest.TestCase):
       RspOpcode.COMP,
       zhujiang.cc1.write_response_for(write_request).opcode,
     )
-    snp_uniques = [
+    invalidations = [
       message
       for message in zhujiang.cc0.received_messages
       if message.channel == Channel.SNP
     ]
-    self.assertEqual(1, len(snp_uniques))
-    self.assertEqual(SnpOpcode.SNP_UNIQUE, snp_uniques[0].opcode)
+    self.assertEqual(1, len(invalidations))
+    self.assertEqual(SnpOpcode.SNP_MAKE_INVALID, invalidations[0].opcode)
 
   def test_read_shared_downgrades_uc_holder(self):
     zhujiang = Zhujiang()

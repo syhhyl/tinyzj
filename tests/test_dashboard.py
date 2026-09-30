@@ -26,13 +26,14 @@ class DashboardTest(unittest.TestCase):
     self.assertFalse(dashboard.system.cc0.pending_cached_stores)
     dashboard.system.check_invariants()
 
-  def test_cached_write_read_error_releases_pending_store(self):
+  def test_cached_write_uses_make_unique_without_reading_storage(self):
     dashboard = Dashboard()
     dashboard.system.s.error_addresses.add("A")
     request = dashboard.write("A", "value")
     dashboard.system.run_until_idle()
-    self.assertEqual("DERR", dashboard.system.cc0.read_response_for(request).resp_err)
-    self.assertNotIn("A", dashboard.system.cc0.cache)
+    self.assertIsNotNone(dashboard.system.cc0.write_response_for(request))
+    self.assertEqual(("UD", "value"), dashboard.system.cc0.cache["A"])
+    self.assertNotIn("A", dashboard.system.s.dj.data_by_address)
     self.assertFalse(dashboard.system.cc0.pending_cached_stores)
     dashboard.system.check_invariants()
 
@@ -269,8 +270,8 @@ class DashboardTest(unittest.TestCase):
     dashboard = Dashboard()
     dashboard.write("A", "value")
     view = dashboard.render()
-    self.assertLess(view.index("Node CC0"), view.index("ReadUnique[REQ]"))
-    self.assertLess(view.index("ReadUnique[REQ]"), view.index("╰"))
+    self.assertLess(view.index("Node CC0"), view.index("MakeUnique[REQ]"))
+    self.assertLess(view.index("MakeUnique[REQ]"), view.index("╰"))
     self.assertEqual(0, dashboard.steps)
     self.assertFalse(dashboard.system.ring.in_flight[0].in_ring)
 
@@ -288,7 +289,7 @@ class DashboardTest(unittest.TestCase):
 
   def test_blocked_request_is_displayed_outside_node(self):
     dashboard = Dashboard(max_transactions=1, retry_enabled=False)
-    dashboard.write("A", "value", cc="cc0")
+    dashboard.read("A", cc="cc0")
     dashboard.read("B", cc="cc1")
     dashboard.step(2)
     before = len(dashboard.system.ring.in_flight)
