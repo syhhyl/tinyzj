@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 if [ "$#" -eq 0 ]; then
-  echo "用法: ./demo.sh xxx.txt（读取 examples/xxx.txt）" >&2
+  echo "用法: ./run.sh xxx.txt（读取 examples/xxx.txt）" >&2
   exit 1
 fi
 if [ "$#" -gt 0 ]; then
