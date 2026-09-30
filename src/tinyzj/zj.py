@@ -140,6 +140,7 @@ class Zhujiang:
       assert cc.write_data_sent <= ids
       assert set(cc.atomic_completions) <= ids
       assert set(cc.retry_requests) <= ids
+      assert set(cc.pending_cached_stores) <= set(cc.active_requests.values()) | set(cc.waiting_requests)
       if cc.id_capacity is not None:
         assert len(ids) <= cc.id_capacity
     if not self.has_pending_work():
@@ -194,6 +195,7 @@ class Socket(Endpoint):
     self.dvm_parts = {}
     self.pending_write_data = {}
     self.next_transaction_id = 0
+    self.pending_cached_stores = {}
 
   def read(self, address):
     if address is None:
@@ -232,6 +234,14 @@ class Socket(Endpoint):
     if address not in self.cache or self.cache[address][0] not in (Resp.UC, Resp.UD):
       raise ValueError("cached store requires unique ownership")
     self.cache[address] = (Resp.UD, data)
+
+  def store(self, address, data):
+    request = self.read_unique(address)
+    if request is None:
+      self.store_cached(address, data)
+    else:
+      self.pending_cached_stores[request] = data
+    return request
 
   def _address_pending(self, address):
     return any(request.address == address for request in self.active_requests.values()) or any(
@@ -460,6 +470,10 @@ class Socket(Endpoint):
         self.request_states[request] = "send_comp_ack"
         if message.resp_err == RespErr.OK:
           self.cache[message.address] = (message.resp, message.payload)
+        if request in self.pending_cached_stores:
+          data = self.pending_cached_stores.pop(request)
+          if message.resp_err == RespErr.OK:
+            self.cache[message.address] = (Resp.UD, data)
         ack = Message(
           self.node_name,
           message.home_nid,

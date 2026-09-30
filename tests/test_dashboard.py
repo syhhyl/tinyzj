@@ -10,6 +10,30 @@ from tinyzj.dashboard import Dashboard, main
 
 class DashboardTest(unittest.TestCase):
 
+  def test_cached_writes_serialize_and_remote_read_gets_latest(self):
+    dashboard = Dashboard()
+    dashboard.write("A", "first")
+    dashboard.write("A", "second")
+    dashboard.system.run_until_idle()
+    self.assertEqual(("UD", "second"), dashboard.system.cc0.cache["A"])
+    self.assertIsNone(dashboard.write("A", "third"))
+    self.assertIsNone(dashboard.read("A"))
+    request = dashboard.read("A", "cc1")
+    dashboard.system.run_until_idle()
+    self.assertEqual("third", dashboard.system.cc1.read_response_for(request).payload)
+    self.assertFalse(dashboard.system.cc0.pending_cached_stores)
+    dashboard.system.check_invariants()
+
+  def test_cached_write_read_error_releases_pending_store(self):
+    dashboard = Dashboard()
+    dashboard.system.s.error_addresses.add("A")
+    request = dashboard.write("A", "value")
+    dashboard.system.run_until_idle()
+    self.assertEqual("DERR", dashboard.system.cc0.read_response_for(request).resp_err)
+    self.assertNotIn("A", dashboard.system.cc0.cache)
+    self.assertFalse(dashboard.system.cc0.pending_cached_stores)
+    dashboard.system.check_invariants()
+
   def test_footer_layout_and_command_response_completion(self):
     dashboard = Dashboard()
     request = dashboard.write("A", "hello")
@@ -104,11 +128,11 @@ class DashboardTest(unittest.TestCase):
     initial = dashboard.render()
     self.assertEqual(initial, dashboard.render())
     self.assertEqual(0, dashboard.steps)
-    self.assertIn("REQ · ReadShared", initial)
+    self.assertIn("ReadShared[REQ]", initial)
     self.assertIn("TxnID=0", initial)
-    self.assertGreater(initial.index("REQ · ReadShared"), initial.index("╭"))
+    self.assertGreater(initial.index("ReadShared[REQ]"), initial.index("╭"))
     moved = dashboard.step()
-    self.assertGreater(moved.index("REQ · ReadShared"), moved.index("╭"))
+    self.assertGreater(moved.index("ReadShared[REQ]"), moved.index("╭"))
     self.assertIsNone(dashboard.system.cc0.read_response_for(request))
     dashboard.step(9)
     self.assertEqual(10, dashboard.steps)
@@ -119,6 +143,9 @@ class DashboardTest(unittest.TestCase):
     dashboard = Dashboard()
     dashboard.write("A", "hello")
     dashboard.step(20)
+    self.assertEqual(("UD", "hello"), dashboard.system.cc0.cache["A"])
+    self.assertIsNone(dashboard.read("A", cc="cc0"))
+    self.assertFalse(dashboard.system.has_pending_work())
     request = dashboard.read("A", cc="cc1")
     for _ in range(100):
       if not dashboard.system.ring.in_flight:
@@ -144,9 +171,9 @@ class DashboardTest(unittest.TestCase):
       if not dashboard.system.ring.in_flight:
         break
       dashboard.step()
-    self.assertEqual({}, dashboard.system.cc0.cache)
+    self.assertEqual({"A": ("UD", "new")}, dashboard.system.cc0.cache)
     self.assertEqual({}, dashboard.system.cc1.cache)
-    self.assertEqual("new", dashboard.system.s.dj.data_by_address["A"])
+    self.assertNotIn("A", dashboard.system.s.dj.data_by_address)
     self.assertEqual({}, dashboard.system.hf.address_busy)
 
   def test_invalid_requester_does_not_inject(self):
@@ -170,7 +197,7 @@ class DashboardTest(unittest.TestCase):
     self.assertIn("交付 M0", dashboard.events[0])
     self.assertIn("新消息 M1", dashboard.events[1])
     self.assertNotIn("── 队列占用", second)
-    self.assertIn("REQ · ReadNoSnp", second)
+    self.assertIn("ReadNoSnp[REQ]", second)
     self.assertIn("TxnID=0", second)
     self.assertEqual(2, dashboard.steps)
 
@@ -178,8 +205,8 @@ class DashboardTest(unittest.TestCase):
     dashboard = Dashboard()
     dashboard.write("A", "value")
     view = dashboard.render()
-    self.assertLess(view.index("Node CC0"), view.index("REQ · WriteUniqueFull"))
-    self.assertLess(view.index("REQ · WriteUniqueFull"), view.index("╰"))
+    self.assertLess(view.index("Node CC0"), view.index("ReadUnique[REQ]"))
+    self.assertLess(view.index("ReadUnique[REQ]"), view.index("╰"))
     self.assertEqual(0, dashboard.steps)
     self.assertFalse(dashboard.system.ring.in_flight[0].in_ring)
 
@@ -190,8 +217,8 @@ class DashboardTest(unittest.TestCase):
     view = dashboard.render(color=True)
     self.assertNotIn("more", view)
     for index in range(12):
-      self.assertIn(f"REQ · ReadShared  TxnID={index}", view)
-    rows = [line for line in view.splitlines() if "REQ · ReadShared" in line]
+      self.assertIn(f"ReadShared[REQ]  TxnID={index}", view)
+    rows = [line for line in view.splitlines() if "ReadShared[REQ]" in line]
     self.assertEqual(12, len(rows))
     self.assertTrue(all("\033[36m" in line for line in rows))
 
@@ -204,8 +231,8 @@ class DashboardTest(unittest.TestCase):
     view = dashboard.render()
     self.assertIn("TxnID=0  WAIT", view)
     self.assertNotIn("× WAIT", view)
-    self.assertIn("REQ · ReadShared", view)
-    self.assertLess(view.index("REQ · ReadShared"), view.index("╭"))
+    self.assertIn("ReadShared[REQ]", view)
+    self.assertLess(view.index("ReadShared[REQ]"), view.index("╭"))
     self.assertNotIn("接收等待区", view)
     self.assertEqual(4, view.count("Node "))
     self.assertEqual(before, len(dashboard.system.ring.in_flight))

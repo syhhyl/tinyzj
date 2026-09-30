@@ -1,0 +1,17 @@
+# 无数据 snoop 响应演示：用户只发起 read / write
+# 观察干净副本返回 SnpResp[RSP]，而不是 SnpRespData[DAT]
+# 这里无数据指 snoop 响应；整个读写事务仍包含 DAT，不是 Dataless 维护事务
+
+# 准备：读未写入的 A，取得教学默认值，CC0 持有干净的 SC 副本
+read A cc0
+step 12
+# 1. CC1 读：HF 向 CC0 发 SnpShared[SNP]
+# CC0 的副本干净，只返回 SnpResp[RSP]；读数据由 HF 从 S 取得
+read A cc1
+step 16
+
+# 2. CC0 写：HF 向两个持有者发 SnpUnique[SNP]
+# 两个 SC 副本失效并返回 SnpResp[RSP]，不回传旧数据
+# CC0 通过 ReadUnique 取得独占权限，随后本地写 updated [UD]；S 不更新
+write A updated cc0
+step 17

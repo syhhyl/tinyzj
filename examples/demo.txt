@@ -1,32 +1,28 @@
-# 所有请求在一次 Enter 后同时发起；之后每次 Enter 推进一步
-# 同地址并发读写：观察队列、HF 背压和事务串行处理
+# CHI 入门：只用地址 A，先看串行事务，再看共享和失效
+# read 未命中时 ReadShared；write 无独占权限时 ReadUnique，随后本地写为 UD
+# 连续 read/write 会同批发起，空行和注释不分批；用 step N 等前一阶段完成
+# 每次 Enter 推进一步；以下步数对应默认配置和字符串数据
+
+# 1. 取得独占权限后本地写：CC0 保存 hello [UD]，S 尚未更新
 write A hello cc0
-read A cc1
+step 12
 
+# 2. 写后同核读：命中最新的 hello，不产生 CHI 消息
 read A cc0
+step 1
 
-# 重复读取也同批发起，此时尚未填充缓存
+# 3. 同核再次读：本地缓存命中，不产生 CHI 消息
 read A cc0
-read A cc1
+step 1
 
-# 同一地址的第二次写入
+# 4. 跨核读：CC0 用 SnpRespData 返回最新数据，HF 接管 dirty，两个核成为 SC
+read A cc1
+step 10
+
+# 5. 重新取得独占权限：失效共享副本，CC0 本地写为 updated [UD]
 write A updated cc0
+step 11
 
+# 6. 失效后重读：不能命中旧副本，重新取回 updated
 read A cc1
-read A cc0
-
-# 多地址并发写入，以及读取未写入的 D
-write B bravo cc0
-write C charlie cc1
-read D cc0
-
-# 跨端读取 B/C，同时再次写 A
-read B cc1
-read C cc0
-write A final cc1
-
-# 并发读取的返回值取决于 HF 实际接受顺序，而非文件行号
-read A cc0
-read A cc1
-read B cc1
-read C cc0
+step 10

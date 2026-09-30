@@ -69,7 +69,7 @@ class Dashboard:
     return self._request("read_shared", address, cc)
 
   def write(self, address, data, cc="cc0"):
-    return self._request("write", address, cc, data)
+    return self._request("store", address, cc, data)
 
   def memory(self, address=None):
     data = self.system.s.dj.data_by_address
@@ -109,6 +109,14 @@ class Dashboard:
       panel.extend(f"  {address!r} = {value!r}" for address, value in data.items())
     else:
       panel.append("  （空）")
+    for name, cache in (("CC0 cache", self.system.cc0.cache),
+                        ("CC1 cache", self.system.cc1.cache)):
+      panel.append(paint(name, "1;37"))
+      panel.extend(f"  {address!r} = {data!r} [{state}]"
+                   for address, (state, data) in cache.items())
+    panel.append(paint("HF dirty", "1;37"))
+    panel.extend(f"  {address!r} = {data!r}"
+                 for address, data in self.system.hf.dirty_data.items())
 
     total_width = max(map(columns, lines), default=0)
     left_width = max(total_width // 2, max(map(columns, commands), default=0) + 2)
@@ -150,7 +158,7 @@ class Dashboard:
         request = entry.get("request")
         if entry["state"] == "active" and request is not None:
           endpoint = self._cc(entry["cc"])
-          response_for = endpoint.read_response_for if entry["words"][0] == "read" else endpoint.write_response_for
+          response_for = endpoint.read_response_for
           if response_for(request) is not None:
             entry["state"] = "done"
       self._identify_messages()
@@ -192,7 +200,7 @@ class Dashboard:
 
     def message_label(injection):
       message = injection.message
-      label = f"{message.channel} · {message.opcode}  TxnID={message.transaction_id}"
+      label = f"{message.opcode}[{message.channel}]  TxnID={message.transaction_id}"
       if message.dbid is not None:
         label += f"  DBID={message.dbid}"
       if injection in blocked_messages:
@@ -352,7 +360,7 @@ HELP = """命令：
   help                 显示帮助
   quit                 退出
 地址和数据作为字符串；含空格时用引号，例如 write A "hello world"。
-read 自动查缓存并发起共享读；write 自动失效旧副本并写存储。默认请求者为 cc0。"""
+read 自动查缓存并发起共享读；write 取得独占权限后更新本地缓存为 UD，不立即写入 S。默认请求者为 cc0。"""
 
 
 def _main():
